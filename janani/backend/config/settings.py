@@ -184,6 +184,10 @@ RAG = {
     # When YouTube blocks caption downloads (common from cloud IPs such as Render's), route through a proxy.
     "YT_PROXY_URL": env("YT_PROXY_URL", ""),
     "YT_COOKIES_FILE": env("YT_COOKIES_FILE", ""),
+    # Fallback when YouTube blocks caption downloads: Gemini transcribes the video's audio on Google's side.
+    "GEMINI_VIDEO_MODEL": env("GEMINI_VIDEO_MODEL", ""),            # empty = pick the best flash model available
+    "GEMINI_TRANSCRIBE_MAX_MIN": int(env("GEMINI_TRANSCRIBE_MAX_MIN", "120")),   # longest video portion to transcribe
+    "GEMINI_TRANSCRIBE_CHUNK_MIN": int(env("GEMINI_TRANSCRIBE_CHUNK_MIN", "6")),
 }
 
 LOGGING = {

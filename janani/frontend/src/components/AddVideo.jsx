@@ -87,7 +87,7 @@ export default function AddVideo({ title = 'Paste a YouTube link', subtitle, onD
         const r = await api.post('/video/inspect/', { url })
         if (my === seq.current) {
           setPreview(r); setPeek({ loading: false, error: null })
-          if (r.blocked && !r.existing.length) setPaste({ reason: 'YouTube is blocking caption downloads from this network right now. You can still index this video by pasting its transcript.' })
+          if (r.blocked && !r.fallback && !r.existing.length) setPaste({ reason: 'YouTube is blocking caption downloads from this network right now. You can still index this video by pasting its transcript.' })
         }
       } catch (e) {
         if (my === seq.current) setPeek({ loading: false, error: e.message })
@@ -133,6 +133,7 @@ export default function AddVideo({ title = 'Paste a YouTube link', subtitle, onD
       </form>
       {peek.error && url && <p className="hint warn">{peek.error}</p>}
       {peek.loading && <p className="hint"><Loader2 size={13} className="spin" /> Checking captions…</p>}
+      {preview?.fallback && !busy && <p className="hint"><Sparkles size={13} /> This takes a few minutes: Gemini listens to the video and writes the transcript, then Janani indexes it. It is saved, so you only wait once.</p>}
       {preview && !busy && (
         <motion.div className="preview" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
           <img src={preview.thumbnail} alt="" onError={(e) => { e.currentTarget.style.visibility = 'hidden' }} />
@@ -140,7 +141,9 @@ export default function AddVideo({ title = 'Paste a YouTube link', subtitle, onD
             <b>{preview.title || preview.video_id}</b>
             <div className="chips">
               {preview.blocked
-                ? <Chip kind="warn">captions unreachable right now</Chip>
+                ? (preview.fallback
+                  ? <Chip kind="acc">YouTube blocks captions here · Gemini will transcribe the audio</Chip>
+                  : <Chip kind="warn">captions unreachable right now</Chip>)
                 : <Chip kind="ok">{preview.tracks.length} caption {preview.tracks.length === 1 ? 'track' : 'tracks'}</Chip>}
               {preview.existing.length > 0 && <Chip kind="acc">already indexed · {preview.existing.map((s) => s.lang_code).join(', ')}</Chip>}
             </div>

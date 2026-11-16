@@ -48,7 +48,11 @@ Free-plan caveats: the free web instance sleeps after ~15 min idle (first reques
 free PostgreSQL **expires after 30 days** — switch `plan:` in `render.yaml` (e.g. `starter` / `basic-256mb`) to keep data.
 
 ### Notes
-- **YouTube from the cloud:** YouTube often blocks transcript downloads from data-center IPs (Render's included).
-  The app detects this and offers **Paste the transcript** (always works); `YT_PROXY_URL` routes downloads through a proxy.
+- **YouTube from the cloud:** YouTube often blocks caption downloads from data-center IPs (Render's included).
+  Janani tries, in order: cached transcript (Postgres) → `youtube-transcript-api` → `yt-dlp` (several player clients) →
+  **Gemini transcribes the video's audio on Google's servers** (the request never touches YouTube from our IP; public videos only;
+  10-minute windows, up to `GEMINI_TRANSCRIBE_MAX_MIN`=120 minutes per video, saved so it happens once) → **Paste the transcript**.
+  Optional: `YT_PROXY_URL` routes downloads through a proxy; `GEMINI_VIDEO_MODEL` pins the transcription model
+  (default: newest flash model your key can use, with automatic fallback when a model is overloaded or retired).
 - Answers stream live over Server-Sent Events (gunicorn gthread workers, 180 s request timeout).
 - Changing `GEMINI_EMBED_MODEL`/`EMBED_DIM` requires re-indexing sources.

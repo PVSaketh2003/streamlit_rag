@@ -344,3 +344,212 @@ class ServingTests(TestCase):
                     self.assertEqual(r["Cache-Control"], "no-cache")
         self.assertEqual(Client().get("/api/config/").status_code, 200)       # API is not swallowed by the SPA route
         self.assertEqual(Client().get("/api/does-not-exist/").status_code, 404)
+
+
+# ------------------------------------------------------------------ Gemini audio-transcription fallback
+
+class GeminiModelPickTests(TestCase):
+    def test_newest_stable_flash_first_and_lite_excluded(self):
+        class M:
+            def __init__(self, name):
+                self.name, self.supported_actions = f"models/{name}", ["generateContent"]
+
+        class Client:
+            class models:
+                @staticmethod
+                def list():
+                    return [M(n) for n in ["gemini-2.5-flash", "gemini-3.5-flash", "gemini-3.8-flash", "gemini-3.7-flash",
+                                           "gemini-3.8-flash-tts", "gemini-flash-latest", "gemini-3.1-flash-lite"]]
+
+        core._state.pop("video_models", None)
+        with mock.patch.object(core, "GEMINI_VIDEO_MODEL", ""):
+            order = core._video_model_candidates(Client())
+        core._state.pop("video_models", None)
+        self.assertEqual(order[0], "gemini-3.1-flash-lite")                    # lite first (fast, rarely overloaded)
+        self.assertEqual(order[1:3], ["gemini-3.8-flash", "gemini-3.7-flash"])
+        self.assertNotIn("gemini-3.8-flash-tts", order)
+
+    def test_timestamp_noise_is_stripped(self):
+        raw = ("<precision> [ 0m3s564ms - 0m3s944ms ] :  Here, <precision> [ 0m3s944ms - 0m5s634ms ] :  we tackle "
+               "backpropagation. [00:12] Next part (1:02:33) ends.\n0:45 Last line at 3:30 pm")
+        self.assertEqual(core.clean_transcript(raw),
+                         "Here, we tackle backpropagation. Next part ends. Last line at 3:30 pm")
+
+    def test_retired_model_detection(self):
+        self.assertTrue(core._model_unusable("404 NOT_FOUND. This model is no longer available to new users"))
+        self.assertFalse(core._model_unusable("429 RESOURCE_EXHAUSTED"))
+
+
+@override_settings(APP_ACCESS_TOKEN="")
+class GeminiFallbackTests(TestCase):
+    def setUp(self):
+        core._indexes.clear()
+        for p in [mock.patch.object(core, "_embed_batch", side_effect=fake_embed_batch),
+                  mock.patch.object(core, "_gemini_client", return_value=object()),
+                  mock.patch.object(core, "fetch_video_title", return_value="T"),
+                  mock.patch.object(core, "GEMINI_API_KEY", "test-key"),
+                  mock.patch.object(core, "TRANSCRIBE_CHUNK_MIN", 10),
+                  mock.patch.object(core, "TRANSCRIBE_MAX_MIN", 30),
+                  mock.patch.object(core, "_video_model_candidates", return_value=["m1"])]:
+            p.start()
+            self.addCleanup(p.stop)
+
+    def test_windows_are_joined_in_order_language_parsed_and_end_detected(self):
+        calls = []
+
+        def fake_chunk(client, model, vid, s, e, lang):
+            calls.append((s, e, lang))
+            if s >= 1200:
+                raise RuntimeError("400 INVALID_ARGUMENT. Request contains an invalid argument.")   # past the end
+            return {0: "LANG: hi\nनमस्ते दोस्तों आज हम चेन के बारे में बात करेंगे", 600: "दूसरा हिस्सा यहाँ है"}[s]
+
+        with mock.patch.object(core, "_transcribe_chunk", side_effect=fake_chunk):
+            events = list(core.gemini_transcribe("zzzzzzzzzzz"))
+        done = events[-1]
+        self.assertEqual(done[0], "done")
+        _, text, lang, minutes, partial, gap = done
+        self.assertEqual(lang, "hi")
+        self.assertLess(text.index("नमस्ते"), text.index("दूसरा"))            # window order preserved
+        self.assertNotIn("LANG", text)
+        self.assertEqual((minutes, partial, gap), (20, False, 0))
+        self.assertEqual(sorted(c[:2] for c in calls)[:2], [(0, 600), (600, 1200)])
+        self.assertTrue(all(c[2] == "hi" for c in calls if c[0] > 0))            # language carried to later windows
+
+    def test_marks_partial_when_cap_reached(self):
+        with mock.patch.object(core, "_transcribe_chunk",
+                               side_effect=lambda *a: "LANG: en\ntext" if a[3] == 0 else "more"):
+            done = list(core.gemini_transcribe("zzzzzzzzzzz"))[-1]
+        self.assertTrue(done[4])
+        self.assertEqual(done[3], 30)
+
+    def test_blocked_empty_answers_are_retried_not_treated_as_the_end(self):
+        """Regression: Gemini's recitation filter returns '' at random; that used to end the transcript early."""
+        seen = {}
+
+        def fake_chunk(client, model, vid, s, e, lang):
+            seen[s] = seen.get(s, 0) + 1
+            if s == 600 and seen[s] == 1:
+                return ""                                       # blocked once, fine on the retry
+            if s >= 1200:
+                raise RuntimeError("400 INVALID_ARGUMENT")
+            return "LANG: en\nfirst part" if s == 0 else "second part"
+
+        with mock.patch.object(core, "_transcribe_chunk", side_effect=fake_chunk):
+            done = list(core.gemini_transcribe("zzzzzzzzzzz"))[-1]
+        self.assertEqual(done[1], "first part second part")
+        self.assertEqual(seen[600], 2)
+
+    def test_stretch_blocked_at_every_size_leaves_a_reported_gap_but_continues(self):
+        def fake_chunk(client, model, vid, s, e, lang):
+            if 600 <= s < 1200:
+                return ""                                       # blocked however it is sliced
+            if s >= 1800:
+                raise RuntimeError("400 INVALID_ARGUMENT")
+            return "LANG: en\nfirst" if s == 0 else "third"
+
+        with mock.patch.object(core, "_video_model_candidates", return_value=["m1"]), \
+                mock.patch.object(core, "_transcribe_chunk", side_effect=fake_chunk), \
+                mock.patch.object(core, "TRANSCRIBE_MAX_MIN", 40):
+            done = list(core.gemini_transcribe("zzzzzzzzzzz"))[-1]
+        _, text, lang, minutes, partial, gap = done
+        self.assertIn("first", text)
+        self.assertIn("third", text)                             # the stretch after the hole is still captured
+        self.assertEqual(gap, 10)                                # and the hole is reported, not hidden
+
+    def test_blocked_window_is_redone_as_short_pieces(self):
+        """Regression: a window blocked on every retry used to leave a 6-minute hole in the transcript."""
+        def fake_chunk(client, model, vid, s, e, lang):
+            if s >= 1200:
+                raise RuntimeError("400 INVALID_ARGUMENT")
+            if e - s > 120:
+                return ""                                       # whole window always blocked
+            return ("LANG: en\n" if s == 0 else "") + f"piece-{s}"
+
+        with mock.patch.object(core, "_video_model_candidates", return_value=["m1"]), \
+                mock.patch.object(core, "_transcribe_chunk", side_effect=fake_chunk):
+            done = list(core.gemini_transcribe("zzzzzzzzzzz"))[-1]
+        _, text, lang, minutes, partial, gap = done
+        self.assertEqual(gap, 0)
+        self.assertEqual(lang, "en")
+        for start in (0, 120, 240, 360, 480, 600, 720, 840, 960, 1080):
+            self.assertIn(f"piece-{start}", text)
+
+    def test_language_falls_back_to_script_when_lang_line_missing(self):
+        def fake_chunk(client, model, vid, s, e, lang):
+            if s >= 600:
+                raise RuntimeError("400 INVALID_ARGUMENT")
+            return "नमस्ते दोस्तों आज हम चेन के बारे में बात करेंगे"       # model forgot the LANG line
+
+        with mock.patch.object(core, "_transcribe_chunk", side_effect=fake_chunk):
+            done = list(core.gemini_transcribe("zzzzzzzzzzz"))[-1]
+        self.assertEqual(done[2], "hi")
+
+    def test_overloaded_model_rotates_to_the_next_one(self):
+        tried = []
+
+        def fake_chunk(client, model, vid, s, e, lang):
+            tried.append((model, s))
+            if model == "m1":
+                raise RuntimeError("503 UNAVAILABLE. This model is currently experiencing high demand.")
+            if s >= 600:
+                raise RuntimeError("400 INVALID_ARGUMENT")
+            return "LANG: en\nhello world text"
+
+        with mock.patch.object(core, "_video_model_candidates", return_value=["m1", "m2"]), \
+                mock.patch.object(core, "_transcribe_chunk", side_effect=fake_chunk):
+            done = list(core.gemini_transcribe("zzzzzzzzzzz"))[-1]
+        self.assertEqual(done[1], "hello world text")
+        self.assertEqual(tried[:2], [("m1", 0), ("m2", 0)])
+
+    def test_all_models_failing_raises_clear_error(self):
+        with mock.patch.object(core, "_video_model_candidates", return_value=["m1", "m2"]), \
+                mock.patch.object(core, "_transcribe_chunk", side_effect=RuntimeError("503 UNAVAILABLE high demand")):
+            with self.assertRaises(core.GeminiTranscribeError):
+                list(core.gemini_transcribe("zzzzzzzzzzz"))
+
+    def test_no_speech_at_all_is_an_error(self):
+        with mock.patch.object(core, "_transcribe_chunk", return_value=core.NO_SPEECH):
+            with self.assertRaises(core.GeminiTranscribeError):
+                list(core.gemini_transcribe("zzzzzzzzzzz"))
+
+    def test_blocked_youtube_falls_back_to_gemini_and_indexes(self):
+        from youtube_transcript_api._errors import RequestBlocked
+
+        class Blocked:
+            def list(self, v):
+                raise RequestBlocked(v)
+
+            def fetch(self, v, languages):
+                raise RequestBlocked(v)
+
+        text = "LANG: en\n" + ("A sequential chain runs steps one after another. " * 30)
+        c = Client()
+        with mock.patch.object(core, "_yt_api", return_value=Blocked()), \
+                mock.patch.object(core, "yt_dlp_available", return_value=False), \
+                mock.patch.object(core, "_transcribe_chunk", side_effect=lambda *a: text if a[3] == 0 else (_ for _ in ()).throw(RuntimeError("400 INVALID_ARGUMENT"))):
+            peek = c.post("/api/video/inspect/", json.dumps({"url": "zzzzzzzzzzz"}), content_type="application/json").json()
+            self.assertTrue(peek["blocked"])
+            self.assertEqual(peek["fallback"], "gemini")
+            r = c.post("/api/sources/index/", json.dumps({"url": "zzzzzzzzzzz"}), content_type="application/json",
+                       HTTP_ACCEPT="text/event-stream")
+            self.assertEqual(r.status_code, 200)
+            events = sse_events(r)
+        names = [n for n, _ in events]
+        self.assertEqual(names.count("meta"), 1)
+        self.assertEqual(names[-1], "done")
+        src = VideoSource.objects.get()
+        self.assertEqual(src.lang_code, "en")
+        self.assertIn("Gemini", src.details["fetch"])
+        self.assertTrue(TranscriptCache.objects.filter(video_id="zzzzzzzzzzz", origin="gemini").exists())
+
+    def test_without_gemini_key_blocked_stays_a_503(self):
+        from youtube_transcript_api._errors import RequestBlocked
+
+        class Blocked:
+            def list(self, v):
+                raise RequestBlocked(v)
+
+        with mock.patch.object(core, "GEMINI_API_KEY", ""), mock.patch.object(core, "_yt_api", return_value=Blocked()), \
+                mock.patch.object(core, "yt_dlp_available", return_value=False):
+            r = Client().post("/api/sources/index/", json.dumps({"url": "yyyyyyyyyyy"}), content_type="application/json")
+        self.assertEqual(r.status_code, 503)

@@ -148,9 +148,10 @@ def inspect_video(request):
     except ApiError as exc:
         if exc.code != "youtube_blocked":
             raise
-        tracks, blocked = [], True      # still show title/thumbnail and offer "paste the transcript"
+        tracks, blocked = [], True      # still show title/thumbnail; indexing falls back to Gemini / pasted text
     return Response({
         "video_id": video_id, "title": core.fetch_video_title(video_id) or "", "tracks": tracks, "blocked": blocked,
+        "fallback": "gemini" if blocked and core.gemini_fallback_available() else None,
         "thumbnail": f"https://img.youtube.com/vi/{video_id}/mqdefault.jpg",
         "existing": [source_dict(s) for s in VideoSource.objects.filter(video_id=video_id)],
     })
@@ -177,7 +178,12 @@ def index_source(request):
     d = _body(request)
     video_id = _resolve_video(d)
     requested = d.get("video_lang") or AppSettings.load().video_lang
-    tracks = _tracks(video_id)
+    try:
+        tracks = _tracks(video_id)
+    except ApiError as exc:
+        if exc.code == "youtube_blocked" and core.gemini_fallback_available():
+            return sse_response(_gemini_stream(video_id))     # YouTube blocks us: let Gemini listen instead
+        raise
     try:
         track, reason = core.pick_track(tracks, requested)
     except core.LanguageUnavailable as exc:
@@ -186,7 +192,52 @@ def index_source(request):
     return sse_response(_build_stream(video_id, track, reason, tracks))
 
 
-def _build_stream(video_id, track, reason, tracks, transcript_text=None):
+def _gemini_stream(video_id):
+    """Blocked-by-YouTube path: Gemini transcribes the audio (chunked, with live progress), then the normal
+    split -> embed -> FAISS pipeline runs on that text."""
+    from .models import TranscriptCache
+
+    def stream():
+        reason = "YouTube blocks caption downloads from this server, so Gemini transcribed the video's audio"
+        yield sse_event("stage", {"key": "fetch", "status": "running", "ms": None,
+                                  "detail": "asking Gemini to transcribe the audio"})
+        text, lang, minutes, partial, gap_min = None, None, 0, False, 0
+        cached = TranscriptCache.objects.filter(video_id=video_id, origin="gemini").first()
+        t0 = time.perf_counter()
+        try:
+            if cached:
+                text, lang = cached.text, cached.lang_code
+            else:
+                for ev in core.gemini_transcribe(video_id):
+                    if ev[0] == "progress":
+                        yield sse_event("stage", {"key": "fetch", "status": "running", "ms": None, "detail": ev[2]})
+                    elif ev[0] == "ping":
+                        yield ": keep-alive\n\n"
+                    elif ev[0] == "done":
+                        _, text, lang, minutes, partial, gap_min = ev
+                core.save_transcript(video_id, lang, text, "gemini")
+        except GeneratorExit:
+            raise
+        except Exception as exc:
+            log.warning("Gemini transcription failed for %s: %s", video_id, exc)
+            yield sse_event("stage", {"key": "fetch", "status": "error", "ms": None, "detail": "transcription failed"})
+            yield sse_event("error", {"message": core.friendly_error(exc), "code": "youtube_blocked"})
+            return
+        info = core.lang_info(lang)
+        track = {"code": lang, "name": info["name"], "generated": True, "translatable": False}
+        label = "transcribed from audio by Gemini"
+        if partial:
+            label += f" (first {minutes} min)"
+        if not cached and gap_min:
+            label += f" · {gap_min} min could not be transcribed"
+        yield sse_event("meta", {"video_id": video_id, "track": track, "reason": reason, "reused": False})
+        yield from _build_stream(video_id, track, reason, [track], transcript_text=text, origin_label=label,
+                                 emit_meta=False)
+
+    return stream()
+
+
+def _build_stream(video_id, track, reason, tracks, transcript_text=None, origin_label=None, emit_meta=True):
     key = core.index_key(video_id, track["code"])
     existing = VideoSource.objects.filter(key=key).first()
     if existing and existing.embed_model != core.EMBED_TAG:
@@ -195,12 +246,14 @@ def _build_stream(video_id, track, reason, tracks, transcript_text=None):
         existing = None
 
     def stream():
-        yield sse_event("meta", {"video_id": video_id, "track": track, "reason": reason, "reused": bool(existing)})
+        if emit_meta:
+            yield sse_event("meta", {"video_id": video_id, "track": track, "reason": reason, "reused": bool(existing)})
         if existing:
             yield sse_event("done", {"source": source_dict(existing), "reused": True})
             return
         try:
-            for ev in core.build_index(video_id, track, reason, tracks, transcript_text=transcript_text):
+            for ev in core.build_index(video_id, track, reason, tracks, transcript_text=transcript_text,
+                                       origin_label=origin_label):
                 if ev[0] == "stage":
                     _, skey, status, ms, detail = ev
                     yield sse_event("stage", {"key": skey, "status": status, "ms": ms, "detail": detail})

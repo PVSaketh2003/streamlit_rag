@@ -9,5 +9,6 @@ langchain-text-splitters>=0.3,<2
 openai>=1.40,<4
 google-genai>=1.0,<3
 youtube-transcript-api>=1.2,<2
+yt-dlp>=2025.1.1
 whitenoise>=6.7,<7
 gunicorn>=22,<24
