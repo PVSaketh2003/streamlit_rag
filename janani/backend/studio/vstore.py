@@ -1,7 +1,7 @@
 """Minimal FAISS vector store with LangChain-identical MMR retrieval.
 
 Replaces `langchain_community.vectorstores.FAISS` so the serverless bundle stays small and the index can
-live in Postgres (Vercel functions have no persistent disk). Behaviour matches LangChain exactly:
+live in Postgres (cloud instances have no persistent disk). Behaviour matches LangChain exactly:
 
   * `IndexFlatL2` over the (already L2-normalised) embeddings, as `FAISS.from_documents` builds by default
   * `mmr_search` == `max_marginal_relevance_search_with_score_by_vector`: take the `fetch_k` nearest

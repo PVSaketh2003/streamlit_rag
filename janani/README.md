@@ -9,10 +9,10 @@ MMR (k=3, fetch_k=15, λ=0.5) → Groq / xAI Grok chat model, streamed.
 | Layer | Tech |
 |---|---|
 | Frontend | React 18 + Vite, framer-motion, light theme, SSE streaming, ⌘K palette |
-| Backend | Django 5 + DRF — runs as a Vercel Python function under `/api` |
-| Database | PostgreSQL (Neon on Vercel; local Postgres in dev) — sources, chunks, chats, metrics, **and the FAISS indexes** |
+| Backend | Django 5 + DRF on gunicorn (gthread) — one Render web service serves the API (`/api`) **and** the React build |
+| Database | PostgreSQL (Render Postgres in production; local Postgres in dev) — sources, chunks, chats, metrics, **and the FAISS indexes** |
 | Vectors | `faiss-cpu` IndexFlatL2 + LangChain-identical MMR (`backend/studio/vstore.py`, verified against langchain-community in CI) |
-| CI/CD | GitHub Actions: backend tests on Postgres → frontend tests + build → migrate Neon → deploy to Vercel → smoke test |
+| CI/CD | GitHub Actions: backend tests on Postgres → frontend tests + build → Render deploy hook → wait until the tested commit is live |
 
 ## Local development
 
@@ -23,32 +23,32 @@ cp backend/.env.example backend/.env   # add GROQ_API_KEY (or XAI_API_KEY) and G
 
 Tests: `cd backend && DJANGO_TESTING=1 python manage.py test studio` · `cd frontend && npm test`
 
-## Deploy (one-time setup)
+## Deploy to Render (one-time setup)
 
-The pipeline (`.github/workflows/janani-ci-cd.yml`) deploys every push to `main` that passes all tests.
+Everything is described in [`render.yaml`](../render.yaml) (a Render Blueprint): one web service `janani`
+(Python 3.12, `build.sh` → `start.sh`, health check `/api/health/`) and one PostgreSQL database `janani-db`,
+region Singapore. Auto-deploy is **off**: GitHub Actions deploys only commits that passed every test.
 
-1. **Vercel project** — vercel.com → Add New → Project → create an empty project named `janani`
-   (do **not** import the Git repo; GitHub Actions deploys it). Settings → General: Framework Preset *Other*,
-   Root Directory **empty**.
-2. **Database** — in the project: Storage → Create → **Neon** (Postgres) → connect to the project.
-   This sets `DATABASE_URL` for the app automatically. Copy that connection string for step 4.
-3. **Environment variables** (Project → Settings → Environment Variables, *Production*):
-   `GROQ_API_KEY` (or `XAI_API_KEY`), `GEMINI_API_KEY`, `DJANGO_SECRET_KEY` (long random string),
-   `APP_ACCESS_TOKEN` (the access code you will type in the app — strongly recommended for a public URL).
-4. **GitHub secrets** (repo → Settings → Secrets and variables → Actions):
-   - `VERCEL_TOKEN` — vercel.com/account/tokens
-   - `VERCEL_ORG_ID`, `VERCEL_PROJECT_ID` — Project → Settings → General (Project ID; Team/Org ID under team settings),
-     or run `vercel link` once locally and read `.vercel/project.json`
-   - `DATABASE_URL` — the Neon connection string (used by CI to run migrations)
-5. **Domain** — Vercel project → Settings → Domains → add `janani.pvsairamsaketh.in`.
-   Then in **GoDaddy** → My Products → pvsairamsaketh.in → DNS → Add record:
-   `Type CNAME · Name janani · Value <the value Vercel shows, e.g. cname.vercel-dns.com> · TTL 1 hour`.
-   HTTPS is issued automatically once DNS resolves (minutes, sometimes up to an hour).
-6. Push to `main` (or re-run the workflow). The *deploy* job migrates Neon, deploys, and checks
-   `https://janani.pvsairamsaketh.in/api/health/`.
+1. **Create the Blueprint** — render.com → New → **Blueprint** → connect GitHub → pick `PVSaketh2003/streamlit_rag`
+   (branch `main`). Render reads `render.yaml` and creates the service + database.
+2. **Fill in the secret env vars** Render asks for: `GROQ_API_KEY` (or `XAI_API_KEY`), `GEMINI_API_KEY`,
+   `APP_ACCESS_TOKEN` (the access code you will type to open the app). `DJANGO_SECRET_KEY` and `DATABASE_URL`
+   are generated/wired automatically.
+3. **Deploy hook → GitHub** — Render → `janani` service → Settings → **Deploy Hook** → copy the URL →
+   GitHub repo → Settings → Secrets and variables → Actions → New secret `RENDER_DEPLOY_HOOK_URL`.
+   If Render gave the service a different address than `https://janani.onrender.com`, also add a repository
+   **variable** `RENDER_URL` with that address.
+4. **Domain** — `render.yaml` already attaches `janani.pvsairamsaketh.in`. In **GoDaddy** → My Products →
+   pvsairamsaketh.in → DNS → Add record: `Type CNAME · Name janani · Value <your-service>.onrender.com · TTL 1 hour`.
+   Render then verifies it and issues HTTPS automatically (minutes, sometimes up to an hour).
+5. **Ship** — merge to `main` (or run the workflow manually). The *deploy* job triggers Render and waits until
+   `/api/health/` reports the exact commit that was tested, with the database connected.
+
+Free-plan caveats: the free web instance sleeps after ~15 min idle (first request then takes ~30–60 s), and Render's
+free PostgreSQL **expires after 30 days** — switch `plan:` in `render.yaml` (e.g. `starter` / `basic-256mb`) to keep data.
 
 ### Notes
-- **YouTube from the cloud:** YouTube often blocks transcript downloads from data-center IPs (Vercel's included).
+- **YouTube from the cloud:** YouTube often blocks transcript downloads from data-center IPs (Render's included).
   The app detects this and offers **Paste the transcript** (always works); `YT_PROXY_URL` routes downloads through a proxy.
-- **Function limits:** answers and indexing run inside a 60 s Vercel function; Groq answers take a few seconds.
+- Answers stream live over Server-Sent Events (gunicorn gthread workers, 180 s request timeout).
 - Changing `GEMINI_EMBED_MODEL`/`EMBED_DIM` requires re-indexing sources.

@@ -3,7 +3,7 @@
 ## ✨ Janani (React + Django, deployed) — [`janani/`](janani/)
 
 **https://janani.pvsairamsaketh.in** · Talk to any YouTube video in any language. React frontend, Django API,
-PostgreSQL, FAISS, Gemini embeddings and a Groq/Grok chat model, with GitHub Actions CI/CD to Vercel.
+PostgreSQL, FAISS, Gemini embeddings and a Groq/Grok chat model, with GitHub Actions CI/CD to Render.
 See [janani/README.md](janani/README.md).
 
 ---

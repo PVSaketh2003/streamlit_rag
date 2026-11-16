@@ -3,7 +3,8 @@
 Runs in three places with the same code:
   * locally (`./run.sh`, Postgres on localhost, keys in backend/.env)
   * in CI (GitHub Actions Postgres service)
-  * on Vercel (serverless Python function, Neon Postgres via DATABASE_URL)
+  * on Render (gunicorn web service + Render PostgreSQL via DATABASE_URL); the same service
+    also serves the built React app (frontend/dist) through WhiteNoise
 """
 import getpass
 import os
@@ -41,16 +42,25 @@ def env_list(name, default=""):
     return [x.strip() for x in env(name, default).split(",") if x.strip()]
 
 
+ON_RENDER = bool(env("RENDER"))
 ON_VERCEL = bool(env("VERCEL"))
 TESTING = env_bool("DJANGO_TESTING", False)
 
-DEBUG = env_bool("DJANGO_DEBUG", not ON_VERCEL)
+DEBUG = env_bool("DJANGO_DEBUG", not (ON_RENDER or ON_VERCEL))
 SECRET_KEY = env("DJANGO_SECRET_KEY") or ("dev-only-insecure-key" if DEBUG or TESTING else None)
 if not SECRET_KEY:
-    raise RuntimeError("DJANGO_SECRET_KEY must be set in production (Vercel → Project → Settings → Environment Variables).")
+    raise RuntimeError("DJANGO_SECRET_KEY must be set in production (Render → service → Environment).")
 
 ALLOWED_HOSTS = env_list("DJANGO_ALLOWED_HOSTS",
-                         "localhost,127.0.0.1,[::1],testserver,janani.pvsairamsaketh.in,.vercel.app")
+                         "localhost,127.0.0.1,[::1],testserver,janani.pvsairamsaketh.in,.onrender.com")
+if env("RENDER_EXTERNAL_HOSTNAME"):
+    ALLOWED_HOSTS.append(env("RENDER_EXTERNAL_HOSTNAME"))
+
+# Deployed commit (Render sets RENDER_GIT_COMMIT); CI waits until /api/health/ reports the tested commit.
+APP_VERSION = (env("RENDER_GIT_COMMIT") or env("APP_VERSION") or "dev")[:7]
+
+# Built React app served by the same service (npm run build → frontend/dist).
+FRONTEND_DIST = Path(env("FRONTEND_DIST", str(BASE_DIR.parent / "frontend" / "dist")))
 
 INSTALLED_APPS = [
     "django.contrib.contenttypes",
@@ -63,6 +73,7 @@ INSTALLED_APPS = [
 MIDDLEWARE = [
     "corsheaders.middleware.CorsMiddleware",
     "django.middleware.security.SecurityMiddleware",
+    "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.middleware.common.CommonMiddleware",
     "studio.access.AccessTokenMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
@@ -73,7 +84,7 @@ WSGI_APPLICATION = "config.wsgi.application"
 TEMPLATES = []
 
 
-# ---- PostgreSQL: DATABASE_URL (Neon / Vercel Postgres) or discrete POSTGRES_* vars (local) ----
+# ---- PostgreSQL: DATABASE_URL (Render Postgres / any hosted Postgres) or discrete POSTGRES_* vars (local) ----
 def _database():
     url = env("DATABASE_URL") or env("POSTGRES_URL")
     if url:
@@ -118,9 +129,18 @@ USE_TZ = True
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 CACHES = {"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}}
 
+# ---- static: WhiteNoise serves the React build at the site root (/assets/*, /favicon.svg, …)
+STATIC_URL = "static/"
+WHITENOISE_ROOT = FRONTEND_DIST if FRONTEND_DIST.is_dir() else None
+WHITENOISE_MAX_AGE = 3600
+WHITENOISE_IMMUTABLE_FILE_TEST = lambda path, url: url.startswith("/assets/")  # noqa: E731  (hashed by Vite)
+
 # ---- security (production) ----
 if not DEBUG:
     SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+    SECURE_SSL_REDIRECT = env_bool("SECURE_SSL_REDIRECT", True)
+    SECURE_REDIRECT_EXEMPT = [r"^api/health/$"]       # Render's internal health probe uses plain HTTP
+    SECURE_HSTS_SECONDS = int(env("SECURE_HSTS_SECONDS", "3600"))
     SECURE_CONTENT_TYPE_NOSNIFF = True
     SECURE_REFERRER_POLICY = "same-origin"
     X_FRAME_OPTIONS = "DENY"
@@ -130,7 +150,7 @@ if not DEBUG:
 # strangers from spending your Groq/Gemini quota or deleting your data.
 APP_ACCESS_TOKEN = env("APP_ACCESS_TOKEN", "")
 
-# ---- API / CORS (the frontend is same-origin on Vercel; CORS only matters for other setups) ----
+# ---- API / CORS (the frontend is same-origin in production; CORS only matters for other setups) ----
 CORS_ALLOWED_ORIGINS = env_list(
     "CORS_ALLOWED_ORIGINS",
     "http://localhost:5173,http://127.0.0.1:5173,http://localhost:4173,https://janani.pvsairamsaketh.in")
@@ -158,10 +178,10 @@ RAG = {
     "GEMINI_API_KEY": env("GEMINI_API_KEY", "") or env("GOOGLE_API_KEY", ""),
     "GEMINI_EMBED_MODEL": env("GEMINI_EMBED_MODEL", "gemini-embedding-001"),
     "EMBED_DIM": int(env("EMBED_DIM", "768")),
-    # FAISS indexes live in Postgres; this directory is only a local cache (Vercel: /tmp is the only writable dir).
-    "FAISS_DIR": Path(env("FAISS_DIR", "/tmp/janani-faiss" if ON_VERCEL else str(BASE_DIR / "data" / "faiss"))),
+    # FAISS indexes live in Postgres; this directory is only a legacy local cache.
+    "FAISS_DIR": Path(env("FAISS_DIR", str(BASE_DIR / "data" / "faiss"))),
     "DEFAULT_VIDEO": "Ilg3gGewQ5U",
-    # When YouTube blocks caption downloads (common from cloud IPs such as Vercel's), route through a proxy.
+    # When YouTube blocks caption downloads (common from cloud IPs such as Render's), route through a proxy.
     "YT_PROXY_URL": env("YT_PROXY_URL", ""),
     "YT_COOKIES_FILE": env("YT_COOKIES_FILE", ""),
 }

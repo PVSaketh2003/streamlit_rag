@@ -321,3 +321,26 @@ class AccessGateTests(TestCase):
         self.assertEqual(r.json()["error"]["code"], "access_required")
         self.assertEqual(c.get("/api/config/", HTTP_X_ACCESS_TOKEN="wrong").status_code, 401)
         self.assertEqual(c.get("/api/config/", HTTP_X_ACCESS_TOKEN="s3cret-code").status_code, 200)
+
+
+class ServingTests(TestCase):
+    """The production service serves the React build and the API from one origin."""
+
+    def test_health_reports_version(self):
+        body = Client().get("/api/health/").json()
+        self.assertIn("version", body)
+        self.assertTrue(body["database"])
+
+    def test_spa_fallback_serves_index_html(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "index.html").write_text("<!doctype html><div id=root></div>")
+            with override_settings(FRONTEND_DIST=Path(d)):
+                for path in ("/", "/sources", "/some/deep/route"):
+                    r = Client().get(path)
+                    self.assertEqual(r.status_code, 200, path)
+                    self.assertIn(b'id=root', r.content)
+                    self.assertEqual(r["Cache-Control"], "no-cache")
+        self.assertEqual(Client().get("/api/config/").status_code, 200)       # API is not swallowed by the SPA route
+        self.assertEqual(Client().get("/api/does-not-exist/").status_code, 404)

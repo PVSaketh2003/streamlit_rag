@@ -49,6 +49,19 @@ def _get_or_404(model, **kw):
 
 # ------------------------------------------------------------------ meta
 
+def spa(request):
+    """Serve the built React app's index.html for client-side routes."""
+    from django.conf import settings
+    from django.http import HttpResponse
+    index = settings.FRONTEND_DIST / "index.html"
+    if not index.is_file():
+        return HttpResponse("Frontend not built. Run `npm run build` in janani/frontend (or use the Vite dev server on :5173).",
+                            status=404, content_type="text/plain")
+    resp = HttpResponse(index.read_bytes(), content_type="text/html; charset=utf-8")
+    resp["Cache-Control"] = "no-cache"
+    return resp
+
+
 @api_view(["GET"])
 def health(request):
     try:
@@ -57,7 +70,9 @@ def health(request):
         db = True
     except Exception:
         db = False
-    return Response({"ok": db, "database": db, "runtime": core.runtime_status()})
+    from django.conf import settings
+    return Response({"ok": db, "database": db, "version": settings.APP_VERSION, "runtime": core.runtime_status()},
+                    status=200 if db else 503)
 
 
 @api_view(["GET"])
