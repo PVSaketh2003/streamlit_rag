@@ -1,0 +1,41 @@
+# Render Blueprint for Janani — render.com → New → Blueprint → pick this repo.
+# Deploys are triggered by GitHub Actions only after all tests pass (autoDeployTrigger: off).
+databases:
+  - name: janani-db
+    databaseName: janani
+    user: janani
+    plan: free            # note: Render's free PostgreSQL expires after 30 days — upgrade to keep data
+    region: singapore
+
+services:
+  - type: web
+    name: janani
+    runtime: python
+    plan: free            # free instances sleep after ~15 min idle (first request then takes ~30-60 s)
+    region: singapore
+    rootDir: janani
+    buildCommand: ./build.sh
+    startCommand: ./start.sh
+    healthCheckPath: /api/health/
+    autoDeployTrigger: "off"
+    domains:
+      - janani.pvsairamsaketh.in
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.8
+      - key: NODE_VERSION
+        value: 22.12.0
+      - key: DATABASE_URL
+        fromDatabase:
+          name: janani-db
+          property: connectionString
+      - key: DJANGO_SECRET_KEY
+        generateValue: true
+      - key: WEB_CONCURRENCY
+        value: "1"
+      - key: GROQ_API_KEY        # or XAI_API_KEY for xAI Grok
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: APP_ACCESS_TOKEN    # access code for the app (strongly recommended)
+        sync: false
