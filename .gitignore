@@ -7,3 +7,11 @@ venv/
 models/
 *.safetensors
 *.pdf
+
+# Janani (React + Django)
+node_modules/
+dist/
+.vercel/
+janani/backend/data/
+.env.*
+!.env.example
