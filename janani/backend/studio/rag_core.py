@@ -327,7 +327,7 @@ def _gemini_client():
         from google import genai
         from google.genai import types
         # hard per-call timeout: a stuck video/model call must never freeze a user's indexing
-        _clients["gemini"] = genai.Client(api_key=GEMINI_API_KEY, http_options=types.HttpOptions(timeout=120_000))
+        _clients["gemini"] = genai.Client(api_key=GEMINI_API_KEY, http_options=types.HttpOptions(timeout=70_000))
     return _clients["gemini"]
 
 
@@ -450,9 +450,9 @@ def _with_retries(fn, attempts=3):
 
 def _ydl(extra=None):
     import yt_dlp
-    opts = {"quiet": True, "no_warnings": True, "skip_download": True, "noplaylist": True, "socket_timeout": 12,
+    opts = {"quiet": True, "no_warnings": True, "skip_download": True, "noplaylist": True, "socket_timeout": 6,
             "retries": 0, "extractor_retries": 0,
-            "extractor_args": {"youtube": {"player_client": ["tv", "ios", "mweb", "web_safari"]}}}
+            "extractor_args": {"youtube": {"player_client": ["tv", "ios"]}}}
     if YT_PROXY_URL:
         opts["proxy"] = YT_PROXY_URL
     if YT_COOKIES_FILE and os.path.isfile(YT_COOKIES_FILE):
@@ -523,11 +523,26 @@ def save_transcript(video_id, lang_code, text, origin):
                                              defaults={"text": text, "origin": origin})
 
 
+BLOCK_MEMORY_S = 20 * 60
+
+
+def _youtube_known_blocked():
+    """YouTube blocks the whole server IP, not single videos. Once we have seen it, and Gemini can take over,
+    skip the YouTube routes for a while instead of spending ~40 s re-discovering the block for every video."""
+    return gemini_fallback_available() and time.time() < _state.get("yt_blocked_until", 0)
+
+
+def _remember_youtube_block():
+    _state["yt_blocked_until"] = time.time() + BLOCK_MEMORY_S
+
+
 def load_transcript(video_id, lang_code="en"):
     """Returns (text, was_cached, origin)."""
     cached = _db_transcript(video_id, lang_code)
     if cached:
         return cached, True, "cache"
+    if _youtube_known_blocked():
+        raise YouTubeBlocked("known block")
     errors = []
     try:
         fetched = _with_retries(lambda: _yt_api().fetch(video_id, languages=[lang_code]))
@@ -540,7 +555,9 @@ def load_transcript(video_id, lang_code="en"):
         if name not in BLOCKED_ERRORS | TRANSIENT_ERRORS:
             raise                      # real answers like "captions disabled" or "no such language"
         log.warning("youtube-transcript-api failed for %s/%s: %s", video_id, lang_code, name)
-    if yt_dlp_available():
+        if name in BLOCKED_ERRORS:
+            _remember_youtube_block()
+    if yt_dlp_available() and not _youtube_known_blocked():
         try:
             text = _ydl_transcript(video_id, lang_code)
             save_transcript(video_id, lang_code, text, "yt-dlp")
@@ -557,6 +574,8 @@ def list_transcript_tracks(video_id):
     row = TrackCache.objects.filter(video_id=video_id).first()
     if row and row.tracks:
         return row.tracks
+    if _youtube_known_blocked():
+        raise YouTubeBlocked("known block")
     try:
         tracks = []
         for t in _with_retries(lambda: _yt_api().list(video_id)):
@@ -571,8 +590,10 @@ def list_transcript_tracks(video_id):
         if name not in BLOCKED_ERRORS | TRANSIENT_ERRORS:
             raise
         log.warning("Caption listing blocked for %s (%s)", video_id, name)
+        if name in BLOCKED_ERRORS:
+            _remember_youtube_block()
         tracks = None
-        if yt_dlp_available():
+        if yt_dlp_available() and not _youtube_known_blocked():
             try:
                 tracks = _ydl_tracks(video_id)
             except Exception as exc2:
@@ -592,7 +613,7 @@ def list_transcript_tracks(video_id):
 
 GEMINI_VIDEO_MODEL = CFG.get("GEMINI_VIDEO_MODEL", "")
 TRANSCRIBE_MAX_MIN = int(CFG.get("GEMINI_TRANSCRIBE_MAX_MIN", 120))
-TRANSCRIBE_CHUNK_MIN = max(2, int(CFG.get("GEMINI_TRANSCRIBE_CHUNK_MIN", 6)))
+TRANSCRIBE_CHUNK_MIN = max(1, int(CFG.get("GEMINI_TRANSCRIBE_CHUNK_MIN", 3)))
 FALLBACK_VIDEO_MODELS = ["gemini-3.5-flash-lite", "gemini-3.5-flash", "gemini-flash-latest"]
 NO_SPEECH = "[NO SPEECH]"
 
@@ -680,18 +701,14 @@ def _transcribe_chunk(client, model, video_id, start_s, end_s, lang_hint):
     """One Gemini call for [start_s, end_s) of the video, on one model. Returns the raw model text ('' when the
     answer was blocked, e.g. finish_reason RECITATION). Overload / retired-model / end-of-video errors are raised."""
     from google.genai import types
-    first = start_s == 0
     prompt = (
         "Transcribe ALL speech in this video segment word for word, in the language that is spoken "
         "(do not translate). Output ONLY the plain transcript text: no timestamps, no speaker labels, "
         "no headings, no commentary, no markdown. "
-        f"If there is no speech at all, output exactly {NO_SPEECH}."
+        f"If there is no speech at all, output exactly {NO_SPEECH}. "
+        "On the very first line output `LANG: ` followed by the ISO 639-1 code of the main spoken language "
+        "(for example LANG: en or LANG: hi), then the transcript starting on the next line."
     )
-    if first:
-        prompt += (" On the very first line output `LANG: ` followed by the ISO 639-1 code of the main spoken "
-                   "language (for example LANG: en or LANG: hi), then the transcript starting on the next line.")
-    elif lang_hint:
-        prompt += f" The spoken language is {lang_info(lang_hint)['name']}."
     parts = [
         types.Part(file_data=types.FileData(file_uri=f"https://www.youtube.com/watch?v={video_id}"),
                    video_metadata=types.VideoMetadata(start_offset=f"{start_s}s", end_offset=f"{end_s}s")),
@@ -708,78 +725,138 @@ def _transcribe_chunk(client, model, video_id, start_s, end_s, lang_hint):
             return (res.text or "").strip()
         except Exception as exc:
             last = exc
-            if _transient(str(exc)) or _model_unusable(str(exc)):
+            if _transient(str(exc)) or _model_unusable(str(exc)) or _is_end_of_video(str(exc)) and cfg is variants[-1]:
                 raise
     raise last
 
 
+HEDGE_S = 25                # a model that has not answered after this long is raced by the next model
+WINDOW_BUDGET_S = 170       # give up on one window (then re-slice it) after this long
+MAX_LAUNCHES = 8            # calls per window across all models (hedges + retries after errors / blocked answers)
+_hedge_pool = None
+
+
+def _cooldown(model, msg):
+    """A model that just answered 429 (quota) / 503 (overload) is skipped for a while: sending it more calls only
+    makes it slower and burns quota, so retries go to models that are healthy."""
+    m = msg.lower()
+    secs = 90 if ("429" in m or "resource_exhausted" in m or "quota" in m) else 20
+    _state.setdefault("cool", {})[model] = time.time() + secs
+
+
+def _pick_model(models, launched):
+    cool, now = _state.get("cool", {}), time.time()
+    ready = [m for m in models if cool.get(m, 0) <= now] or models
+    return ready[launched % len(ready)]
+
+
+def _get_hedge_pool():
+    global _hedge_pool
+    if _hedge_pool is None:
+        import concurrent.futures as cf
+        _hedge_pool = cf.ThreadPoolExecutor(max_workers=32, thread_name_prefix="gemini-call")
+    return _hedge_pool
+
+
 def _transcribe_window(client, models, video_id, start_s, end_s, lang):
-    """Blocking, run in a worker thread. Rotates models on overload/retirement and retries blocked (empty)
-    answers — Gemini's recitation filter fires randomly on verbatim speech and usually passes on a retry.
-    Returns the raw text, or '' if the window stayed blocked."""
-    attempts, empties, last_err = 0, 0, None
-    for model in models:
-        for _try in range(2):
-            if attempts >= 6:
-                break
-            attempts += 1
-            try:
-                raw = _transcribe_chunk(client, model, video_id, start_s, end_s, lang)
-            except Exception as exc:
-                msg = str(exc)
-                if _is_end_of_video(msg):
-                    raise
-                if _transient(msg) or _model_unusable(msg):
-                    log.warning("Gemini %s failed (%s); trying the next model", model, msg[:90])
+    """Blocking (runs in a worker thread). Starts the window on the best model; if it has not answered after
+    HEDGE_S the same window is raced on the next model, and every failure / blocked (empty) answer immediately
+    launches another attempt. The first real answer wins. Returns the raw text, '' if the window stayed blocked."""
+    import concurrent.futures as cf
+    pool = _get_hedge_pool()
+    pending, launched, empties, last_err = {}, 0, 0, None
+    deadline = time.monotonic() + WINDOW_BUDGET_S
+
+    def launch():
+        nonlocal launched
+        model = _pick_model(models, launched)
+        launched += 1
+        pending[pool.submit(_transcribe_chunk, client, model, video_id, start_s, end_s, lang)] = model
+
+    launch()
+    try:
+        while pending:
+            done, _ = cf.wait(list(pending), timeout=HEDGE_S, return_when=cf.FIRST_COMPLETED)
+            if not done:
+                if time.monotonic() >= deadline or launched >= MAX_LAUNCHES:
+                    if time.monotonic() >= deadline:
+                        break
+                    continue
+                log.info("Gemini slow for %ss-%ss; racing the next model", start_s, end_s)
+                launch()
+                continue
+            for fut in done:
+                model = pending.pop(fut)
+                try:
+                    raw = fut.result()
+                except Exception as exc:
+                    msg = str(exc)
+                    if _is_end_of_video(msg) and not _transient(msg):
+                        raise
                     last_err = exc
-                    break                              # next model
-                raise
-            if raw:
-                _state["video_models"] = [model] + [m for m in models if m != model]   # remember the winner
-                return raw
-            empties += 1
-            log.info("Gemini %s returned an empty answer for %ss-%ss (likely recitation filter); retrying",
-                     model, start_s, end_s)
+                    if _transient(msg):
+                        _cooldown(model, msg)
+                    log.warning("Gemini %s failed (%s); trying another model", model, msg[:90])
+                    if launched < MAX_LAUNCHES and time.monotonic() < deadline:
+                        launch()
+                    continue
+                if raw:
+                    _state["video_models"] = [model] + [m for m in models if m != model]   # remember the winner
+                    return raw
+                empties += 1                                  # blocked / empty answer: usually passes on a retry
+                log.info("Gemini %s returned an empty answer for %ss-%ss; retrying", model, start_s, end_s)
+                if launched < MAX_LAUNCHES and time.monotonic() < deadline:
+                    launch()
+    finally:
+        for f in pending:
+            f.cancel()
     if last_err is not None and empties == 0:
-        raise last_err                                  # every attempt failed with overload / retirement errors
+        raise last_err
     return ""
 
 
-PARALLEL_WINDOWS = 3
-SUB_WINDOW_S = 120
+PARALLEL_WINDOWS = 6
+SUB_WINDOW_S = 90
 
 _SCRIPT_TO_LANG = {"Devanagari": "hi", "Telugu": "te", "Tamil": "ta", "Kannada": "kn", "Malayalam": "ml", "Bengali": "bn",
                    "Gujarati": "gu", "Gurmukhi": "pa", "Arabic": "ar", "Japanese": "ja", "Korean": "ko", "Chinese": "zh",
                    "Cyrillic": "ru", "Latin": "en"}
+_LANG_LINE = re.compile(r"(?m)^[ \t]*LANG:[ \t]*([A-Za-z]{2,3})(?:-[A-Za-z0-9]{2,8})?[ \t]*$\n?")
+
+
+def _split_lang(raw):
+    """(lang or None, text without the LANG: line)."""
+    m = _LANG_LINE.search(raw)
+    if not m:
+        return None, raw
+    return m.group(1).lower(), raw[:m.start()] + raw[m.end():]
 
 
 def _transcribe_window_deep(client, models, video_id, start_s, end_s, lang):
     """A window that stays blocked (Gemini's recitation filter) is redone as short pieces: every call is an
-    independent chance to pass, and a blocked 2-minute piece costs far less than a blocked 6-minute window."""
+    independent chance to pass, and a blocked 90-second piece costs far less than a blocked window."""
     raw = _transcribe_window(client, models, video_id, start_s, end_s, lang)
     if raw or end_s - start_s <= SUB_WINDOW_S:
         return raw
     log.info("Window %ss-%ss stayed blocked; retrying as %ss pieces", start_s, end_s, SUB_WINDOW_S)
-    out, lang_now = [], lang
+    out = []
     for sub_start in range(start_s, end_s, SUB_WINDOW_S):
         try:
-            piece = _transcribe_window(client, models, video_id, sub_start, min(sub_start + SUB_WINDOW_S, end_s), lang_now)
+            piece = _transcribe_window(client, models, video_id, sub_start, min(sub_start + SUB_WINDOW_S, end_s), lang)
         except Exception as exc:
             if _is_end_of_video(str(exc)):
                 break
             raise
         if piece:
             out.append(piece)
-            if sub_start == 0 and not lang_now:
-                m = re.match(r"\s*LANG:\s*([A-Za-z]{2,3})", piece)
-                lang_now = m.group(1).lower() if m else None
     return "\n".join(out)
 
 
 def gemini_transcribe(video_id):
     """Generator. Yields ('progress', done_minutes, label), ('ping',) while waiting, and finally
-    ('done', text, lang_code, minutes, partial). The video is cut into short windows (the first one alone, to
-    learn the language; the rest PARALLEL_WINDOWS at a time) so long videos finish in minutes."""
+    ('done', text, lang_code, minutes, partial, gap_minutes).
+    The video is cut into short windows that are all sent at once (PARALLEL_WINDOWS per round), each hedged
+    across models, so a 14-minute video takes about one round (~30-60 s) instead of minutes."""
     import concurrent.futures as cf
     client = _gemini_client()
     models = _video_model_candidates(client)[:4]
@@ -797,48 +874,31 @@ def gemini_transcribe(video_id):
                 return fut.result()
             yield ("ping",)
 
-    def submit(i):
-        return pool.submit(_transcribe_window_deep, client, models, video_id, i * chunk_s, (i + 1) * chunk_s, lang)
-
     try:
-        # ---- window 0 alone: also tells us the spoken language
-        yield ("progress", 0, f"Gemini is listening · minutes 0–{chunk_min}")
-        try:
-            raw0 = yield from wait_for(submit(0))
-        except Exception as exc:
-            raise GeminiTranscribeError(str(exc)) from None
-        m = re.search(r"(?m)^\s*LANG:\s*([A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})?)\s*$\n?", raw0)
-        if m:
-            lang = m.group(1).split("-")[0].lower()
-            raw0 = raw0[:m.start()] + raw0[m.end():]
-        raw0 = clean_transcript(raw0)
-        if not lang and raw0:
-            lang = _SCRIPT_TO_LANG.get(detect_script(raw0))
-        if not raw0:
-            raise GeminiTranscribeError("Gemini's copyright filter blocked every attempt to transcribe the opening of this "
-                                        "video")
-        if raw0.upper().startswith(NO_SPEECH):
-            raise GeminiTranscribeError("Gemini found no speech in this video, so there is nothing to index.")
-        pieces[0] = raw0
-
-        # ---- remaining windows, a few at a time, consumed in order
-        i = 1
+        i = 0
         while i < n_windows and not ended:
             batch = list(range(i, min(i + PARALLEL_WINDOWS, n_windows)))
             yield ("progress", chunk_min * i,
                    f"Gemini is listening · minutes {batch[0] * chunk_min}–{(batch[-1] + 1) * chunk_min}")
-            futs = {k: submit(k) for k in batch}
+            futs = {k: pool.submit(_transcribe_window_deep, client, models, video_id,
+                                   k * chunk_s, (k + 1) * chunk_s, lang) for k in batch}
             for k in batch:
                 try:
                     raw = yield from wait_for(futs[k])
                 except Exception as exc:
                     if _is_end_of_video(str(exc)):
-                        ended = True                         # window starts after the video ended
+                        ended = True                          # this window starts after the video ended
                         break
-                    raise GeminiTranscribeError(str(exc)) from None
+                    if not pieces and k == batch[0]:
+                        raise GeminiTranscribeError(str(exc)) from None
+                    skipped += 1                              # a window failed outright: leave a reported gap
+                    continue
+                w_lang, raw = _split_lang(raw)
+                if w_lang and not lang:
+                    lang = w_lang
                 raw = clean_transcript(raw)
                 if not raw:
-                    skipped += 1                             # stayed blocked after retries: leave a gap, keep going
+                    skipped += 1                              # stayed blocked after retries + re-slicing: report it
                     continue
                 if raw.upper().startswith(NO_SPEECH):
                     quiet_run += 1
@@ -848,12 +908,18 @@ def gemini_transcribe(video_id):
                     continue
                 quiet_run = 0
                 pieces[k] = raw
+                yield ("progress", (k + 1) * chunk_min, f"Gemini transcribed minutes 0–{(k + 1) * chunk_min}")
             if ended:
                 for f in futs.values():
                     f.cancel()
             i = batch[-1] + 1
 
+        if not pieces:
+            raise GeminiTranscribeError("Gemini returned no transcript for this video (it may have no speech, or "
+                                        "Gemini's copyright filter blocked every attempt)")
         text = re.sub(r"\s+", " ", " ".join(pieces[k] for k in sorted(pieces))).strip()
+        if not lang:
+            lang = _SCRIPT_TO_LANG.get(detect_script(text))
         covered_min = (max(pieces) + 1) * chunk_min
         partial = (not ended) and i >= n_windows
         yield ("done", text, lang or "en", covered_min, partial, skipped * chunk_min)

@@ -132,8 +132,8 @@ export default function AddVideo({ title = 'Paste a YouTube link', subtitle, onD
         </button>
       </form>
       {peek.error && url && <p className="hint warn">{peek.error}</p>}
-      {peek.loading && <p className="hint"><Loader2 size={13} className="spin" /> Checking captions…</p>}
-      {preview?.fallback && !busy && <p className="hint"><Sparkles size={13} /> This takes a few minutes: Gemini listens to the video and writes the transcript, then Janani indexes it. It is saved, so you only wait once.</p>}
+      {peek.loading && !busy && <p className="hint"><Loader2 size={13} className="spin" /> Checking captions…</p>}
+      {preview?.fallback && !busy && <p className="hint"><Sparkles size={13} /> Gemini listens to the video in short parts at the same time, so a 15-minute video takes about a minute (longer videos take a few minutes). The transcript is saved, so you only wait once.</p>}
       {preview && !busy && (
         <motion.div className="preview" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
           <img src={preview.thumbnail} alt="" onError={(e) => { e.currentTarget.style.visibility = 'hidden' }} />

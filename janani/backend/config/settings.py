@@ -187,7 +187,7 @@ RAG = {
     # Fallback when YouTube blocks caption downloads: Gemini transcribes the video's audio on Google's side.
     "GEMINI_VIDEO_MODEL": env("GEMINI_VIDEO_MODEL", ""),            # empty = pick the best flash model available
     "GEMINI_TRANSCRIBE_MAX_MIN": int(env("GEMINI_TRANSCRIBE_MAX_MIN", "120")),   # longest video portion to transcribe
-    "GEMINI_TRANSCRIBE_CHUNK_MIN": int(env("GEMINI_TRANSCRIBE_CHUNK_MIN", "6")),
+    "GEMINI_TRANSCRIBE_CHUNK_MIN": int(env("GEMINI_TRANSCRIBE_CHUNK_MIN", "3")),
 }
 
 LOGGING = {

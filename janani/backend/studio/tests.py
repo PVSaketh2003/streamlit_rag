@@ -2,6 +2,7 @@
 are mocked, so the suite is deterministic and needs only PostgreSQL."""
 import hashlib
 import json
+import time
 from unittest import mock
 
 import numpy as np
@@ -384,6 +385,8 @@ class GeminiModelPickTests(TestCase):
 class GeminiFallbackTests(TestCase):
     def setUp(self):
         core._indexes.clear()
+        core._state.pop("yt_blocked_until", None)
+        self.addCleanup(core._state.pop, "yt_blocked_until", None)
         for p in [mock.patch.object(core, "_embed_batch", side_effect=fake_embed_batch),
                   mock.patch.object(core, "_gemini_client", return_value=object()),
                   mock.patch.object(core, "fetch_video_title", return_value="T"),
@@ -413,7 +416,6 @@ class GeminiFallbackTests(TestCase):
         self.assertNotIn("LANG", text)
         self.assertEqual((minutes, partial, gap), (20, False, 0))
         self.assertEqual(sorted(c[:2] for c in calls)[:2], [(0, 600), (600, 1200)])
-        self.assertTrue(all(c[2] == "hi" for c in calls if c[0] > 0))            # language carried to later windows
 
     def test_marks_partial_when_cap_reached(self):
         with mock.patch.object(core, "_transcribe_chunk",
@@ -461,7 +463,7 @@ class GeminiFallbackTests(TestCase):
         def fake_chunk(client, model, vid, s, e, lang):
             if s >= 1200:
                 raise RuntimeError("400 INVALID_ARGUMENT")
-            if e - s > 120:
+            if e - s > 90:
                 return ""                                       # whole window always blocked
             return ("LANG: en\n" if s == 0 else "") + f"piece-{s}"
 
@@ -471,7 +473,7 @@ class GeminiFallbackTests(TestCase):
         _, text, lang, minutes, partial, gap = done
         self.assertEqual(gap, 0)
         self.assertEqual(lang, "en")
-        for start in (0, 120, 240, 360, 480, 600, 720, 840, 960, 1080):
+        for start in list(range(0, 600, 90)) + list(range(600, 1200, 90)):       # every re-sliced 90 s piece is present
             self.assertIn(f"piece-{start}", text)
 
     def test_language_falls_back_to_script_when_lang_line_missing(self):
@@ -483,6 +485,88 @@ class GeminiFallbackTests(TestCase):
         with mock.patch.object(core, "_transcribe_chunk", side_effect=fake_chunk):
             done = list(core.gemini_transcribe("zzzzzzzzzzz"))[-1]
         self.assertEqual(done[2], "hi")
+
+    def test_all_windows_start_together_not_one_after_another(self):
+        """Regression (measured on Render): the first window ran alone and took 5+ minutes."""
+        import threading
+        started, gate = [], threading.Event()
+
+        def fake_chunk(client, model, vid, s, e, lang):
+            started.append(s)
+            if len(started) >= 3:
+                gate.set()
+            gate.wait(5)                                        # a window only finishes once all 3 have started
+            if s >= 1200:
+                raise RuntimeError("400 INVALID_ARGUMENT")
+            return "LANG: en\ntext-%d" % s
+
+        with mock.patch.object(core, "_transcribe_chunk", side_effect=fake_chunk):
+            done = list(core.gemini_transcribe("zzzzzzzzzzz"))[-1]
+        self.assertTrue(gate.is_set(), "windows were not run in parallel")
+        self.assertEqual(done[2], "en")
+
+    def test_slow_model_is_raced_by_the_next_one(self):
+        """A model that stalls (Gemini 504s after ~80 s) must not delay the window: hedge to the next model."""
+        import threading
+        release, order = threading.Event(), []
+
+        def fake_chunk(client, model, vid, s, e, lang):
+            order.append(model)
+            if model == "slow":
+                release.wait(10)                                # stalls
+                raise RuntimeError("504 DEADLINE_EXCEEDED")
+            if s >= 600:
+                raise RuntimeError("400 INVALID_ARGUMENT")
+            return "LANG: en\nfast answer"
+
+        with mock.patch.object(core, "HEDGE_S", 0.2), \
+                mock.patch.object(core, "_video_model_candidates", return_value=["slow", "fast"]), \
+                mock.patch.object(core, "_transcribe_chunk", side_effect=fake_chunk):
+            import time as _t
+            t0 = _t.time()
+            done = list(core.gemini_transcribe("zzzzzzzzzzz"))[-1]
+            took = _t.time() - t0
+            release.set()
+        self.assertEqual(done[1], "fast answer")
+        self.assertLess(took, 5)
+        self.assertIn("fast", order)                            # the slow model was raced, not waited for
+
+    def test_known_youtube_block_skips_the_slow_routes(self):
+        calls = []
+
+        class Blocked:
+            def list(self, v):
+                calls.append("list")
+                from youtube_transcript_api._errors import IpBlocked
+                raise IpBlocked(v)
+
+        with mock.patch.object(core, "_yt_api", return_value=Blocked()), \
+                mock.patch.object(core, "yt_dlp_available", return_value=True), \
+                mock.patch.object(core, "_ydl_tracks", side_effect=RuntimeError("blocked")) as ydl:
+            for vid in ("aaaaaaaaaaa", "bbbbbbbbbbb"):
+                with self.assertRaises(core.YouTubeBlocked):
+                    core.list_transcript_tracks(vid)
+        self.assertEqual(calls, ["list"])                       # 2nd video: no request to YouTube at all
+        self.assertEqual(ydl.call_count, 0)                     # yt-dlp is skipped too: same blocked IP, ~40 s saved
+
+    def test_model_that_just_hit_quota_is_put_on_cooldown(self):
+        core._state.pop("cool", None)
+        self.addCleanup(core._state.pop, "cool", None)
+
+        def fake_chunk(client, model, vid, s, e, lang):
+            if model == "m1":
+                raise RuntimeError("429 RESOURCE_EXHAUSTED. You exceeded your current quota")
+            if s >= 600:
+                raise RuntimeError("400 INVALID_ARGUMENT")
+            return "LANG: en\nfrom m2"
+
+        with mock.patch.object(core, "_video_model_candidates", return_value=["m1", "m2"]), \
+                mock.patch.object(core, "_transcribe_chunk", side_effect=fake_chunk):
+            done = list(core.gemini_transcribe("zzzzzzzzzzz"))[-1]
+        self.assertEqual(done[1], "from m2")
+        self.assertGreater(core._state["cool"]["m1"], time.time() + 60)          # quota errors cool down ~90 s
+        self.assertEqual(core._pick_model(["m1", "m2"], 0), "m2")                 # and m1 is skipped meanwhile
+        self.assertEqual(core._pick_model(["m1", "m2"], 1), "m2")
 
     def test_overloaded_model_rotates_to_the_next_one(self):
         tried = []
@@ -499,7 +583,8 @@ class GeminiFallbackTests(TestCase):
                 mock.patch.object(core, "_transcribe_chunk", side_effect=fake_chunk):
             done = list(core.gemini_transcribe("zzzzzzzzzzz"))[-1]
         self.assertEqual(done[1], "hello world text")
-        self.assertEqual(tried[:2], [("m1", 0), ("m2", 0)])
+        self.assertIn(("m1", 0), tried)
+        self.assertIn(("m2", 0), tried)                         # window 0 moved on to the next model after the 503
 
     def test_all_models_failing_raises_clear_error(self):
         with mock.patch.object(core, "_video_model_candidates", return_value=["m1", "m2"]), \
