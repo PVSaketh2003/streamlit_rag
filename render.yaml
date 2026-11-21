@@ -37,5 +37,13 @@ services:
         sync: false
       - key: GEMINI_API_KEY
         sync: false
-      - key: APP_ACCESS_TOKEN    # access code for the app (strongly recommended)
+      # Sign-in emails. Gmail SMTP needs a PAID Render instance (free instances block SMTP ports);
+      # on the free plan use BREVO_API_KEY (HTTPS) instead. Set whichever you use in the dashboard.
+      - key: EMAIL_HOST_USER
+        value: pvsaketh1@gmail.com
+      - key: EMAIL_HOST_PASSWORD   # Google App Password for EMAIL_HOST_USER
+        sync: false
+      - key: BREVO_API_KEY         # alternative to SMTP; works on the free plan
+        sync: false
+      - key: ALLOWED_EMAILS        # optional invite list, comma separated (recommended)
         sync: false

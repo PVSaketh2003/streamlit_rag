@@ -44,3 +44,23 @@ export function timeAgo(iso) {
   if (s < 86400) return `${Math.floor(s / 3600)}h ago`
   return `${Math.floor(s / 86400)}d ago`
 }
+
+export const isEmail = (v) => /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test((v || '').trim())
+
+export function maskEmail(v) {
+  const [local = '', domain = ''] = (v || '').trim().split('@')
+  return `${local.slice(0, 1)}${'•'.repeat(Math.max(1, Math.min(local.length - 1, 6)))}@${domain}`
+}
+
+/** 0 (empty) .. 4 (strong): a hint for the sign-up meter; the server enforces the real rules. */
+export function passwordStrength(pw) {
+  if (!pw) return 0
+  let score = 0
+  if (pw.length >= 8) score++
+  if (pw.length >= 12) score++
+  if (/[a-z]/.test(pw) && /[A-Z]/.test(pw)) score++
+  if (/\d/.test(pw) && /[^A-Za-z0-9]/.test(pw)) score++
+  return Math.min(4, Math.max(pw.length < 8 ? 1 : score, 1))
+}
+
+export const fmtClock = (secs) => `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`

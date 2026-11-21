@@ -8,7 +8,7 @@ from rest_framework.response import Response
 
 from . import rag_core as core
 from .api_errors import ApiError
-from .models import AppSettings, Chunk, Conversation, Message, QueryMetric, VideoSource
+from .models import AppSettings, Chunk, Conversation, Message, QueryMetric, UserSource, VideoSource
 from .serializers import (conversation_dict, langs_payload, message_dict, metric_dict, settings_dict,
                           source_dict)
 from .sse import sse_event, sse_response
@@ -38,6 +38,14 @@ def _body(request):
     if not isinstance(data, dict):
         raise ApiError("Expected a JSON object.")
     return data
+
+
+def _link_source(account, source):
+    UserSource.objects.get_or_create(account=account, source=source)
+
+
+def _my_sources(account):
+    return VideoSource.objects.filter(user_links__account=account)
 
 
 def _get_or_404(model, **kw):
@@ -71,7 +79,9 @@ def health(request):
     except Exception:
         db = False
     from django.conf import settings
-    return Response({"ok": db, "database": db, "version": settings.APP_VERSION, "runtime": core.runtime_status()},
+    from . import mailer
+    return Response({"ok": db, "database": db, "version": settings.APP_VERSION, "runtime": core.runtime_status(),
+                     "email": mailer.status()},
                     status=200 if db else 503)
 
 
@@ -86,7 +96,8 @@ def config(request):
         "low_resource_scripts": sorted(core.LOW_RESOURCE_SCRIPTS),
         "retrieval": {"chunk_size": core.CHUNK_SIZE, "chunk_overlap": core.CHUNK_OVERLAP, "k": core.RETRIEVE_K,
                       "fetch_k": core.FETCH_K, "lambda_mult": core.LAMBDA_MULT, "temperature": core.TEMPERATURE},
-        "settings": settings_dict(AppSettings.load()),
+        "settings": settings_dict(AppSettings.load(request.account)),
+        "account": {"email": request.account.email},
         "youtube": {"yt_dlp": core.yt_dlp_available(), "proxy": bool(core.YT_PROXY_URL)},
         "runtime": core.runtime_status(),
     })
@@ -94,7 +105,7 @@ def config(request):
 
 @api_view(["GET", "PATCH"])
 def app_settings(request):
-    s = AppSettings.load()
+    s = AppSettings.load(request.account)
     if request.method == "PATCH":
         d = _body(request)
         if "max_tokens" in d:
@@ -153,22 +164,25 @@ def inspect_video(request):
         "video_id": video_id, "title": core.fetch_video_title(video_id) or "", "tracks": tracks, "blocked": blocked,
         "fallback": "gemini" if blocked and core.gemini_fallback_available() else None,
         "thumbnail": f"https://img.youtube.com/vi/{video_id}/mqdefault.jpg",
-        "existing": [source_dict(s) for s in VideoSource.objects.filter(video_id=video_id)],
+        "existing": [source_dict(s) for s in _my_sources(request.account).filter(video_id=video_id)],
     })
 
 
 @api_view(["GET"])
 def sources(request):
-    return Response({"results": [source_dict(s) for s in VideoSource.objects.all()],
+    return Response({"results": [source_dict(s) for s in _my_sources(request.account)],
                      "building": sorted(core.building_keys())})
 
 
 @api_view(["DELETE"])
 def source_detail(request, pk):
-    s = _get_or_404(VideoSource, pk=pk)
-    index_file = s.index_file
-    s.delete()
-    core.drop_index(pk, index_file)
+    s = _get_or_404(VideoSource, pk=pk, user_links__account=request.account)
+    UserSource.objects.filter(account=request.account, source=s).delete()
+    Conversation.objects.filter(account=request.account, source=s).update(source=None)
+    if not UserSource.objects.filter(source=s).exists():          # last person to remove it frees the shared index
+        index_file = s.index_file
+        s.delete()
+        core.drop_index(pk, index_file)
     return Response(status=204)
 
 
@@ -177,22 +191,22 @@ def index_source(request):
     """Index (or reuse) one video. Streams pipeline stages as Server-Sent Events."""
     d = _body(request)
     video_id = _resolve_video(d)
-    requested = d.get("video_lang") or AppSettings.load().video_lang
+    requested = d.get("video_lang") or AppSettings.load(request.account).video_lang
     try:
         tracks = _tracks(video_id)
     except ApiError as exc:
         if exc.code == "youtube_blocked" and core.gemini_fallback_available():
-            return sse_response(_gemini_stream(video_id))     # YouTube blocks us: let Gemini listen instead
+            return sse_response(_gemini_stream(video_id, request.account))     # YouTube blocks us: Gemini listens
         raise
     try:
         track, reason = core.pick_track(tracks, requested)
     except core.LanguageUnavailable as exc:
         raise ApiError(str(exc), status=409, code="language_unavailable",
                        extra={"tracks": tracks, "requested": requested}) from None
-    return sse_response(_build_stream(video_id, track, reason, tracks))
+    return sse_response(_build_stream(video_id, track, reason, tracks, account=request.account))
 
 
-def _gemini_stream(video_id):
+def _gemini_stream(video_id, account):
     """Blocked-by-YouTube path: Gemini transcribes the audio (chunked, with live progress), then the normal
     split -> embed -> FAISS pipeline runs on that text."""
     from .models import TranscriptCache
@@ -232,12 +246,12 @@ def _gemini_stream(video_id):
             label += f" · {gap_min} min could not be transcribed"
         yield sse_event("meta", {"video_id": video_id, "track": track, "reason": reason, "reused": False})
         yield from _build_stream(video_id, track, reason, [track], transcript_text=text, origin_label=label,
-                                 emit_meta=False)
+                                 emit_meta=False, account=account)
 
     return stream()
 
 
-def _build_stream(video_id, track, reason, tracks, transcript_text=None, origin_label=None, emit_meta=True):
+def _build_stream(video_id, track, reason, tracks, transcript_text=None, origin_label=None, emit_meta=True, account=None):
     key = core.index_key(video_id, track["code"])
     existing = VideoSource.objects.filter(key=key).first()
     if existing and existing.embed_model != core.EMBED_TAG:
@@ -249,6 +263,7 @@ def _build_stream(video_id, track, reason, tracks, transcript_text=None, origin_
         if emit_meta:
             yield sse_event("meta", {"video_id": video_id, "track": track, "reason": reason, "reused": bool(existing)})
         if existing:
+            _link_source(account, existing)
             yield sse_event("done", {"source": source_dict(existing), "reused": True})
             return
         try:
@@ -267,6 +282,7 @@ def _build_stream(video_id, track, reason, tracks, transcript_text=None, origin_
                         Chunk.objects.bulk_create([Chunk(source=src, idx=i, text=t) for i, t in enumerate(texts)],
                                                   batch_size=500)
                     core.register_index(src.id, vs, emb)
+                    _link_source(account, src)
                     log.info("Indexed %s (%s): %d chunks, %.2fs", video_id, track["code"], src.n_chunks, src.total_s)
                     yield sse_event("done", {"source": source_dict(src), "reused": False})
         except GeneratorExit:
@@ -301,7 +317,8 @@ def index_manual(request):
     info = core.lang_info(lang)
     track = {"code": lang, "name": info["name"], "generated": False, "translatable": False}
     core.save_transcript(video_id, lang, text, "manual")
-    return sse_response(_build_stream(video_id, track, "transcript pasted by you", [track], transcript_text=text))
+    return sse_response(_build_stream(video_id, track, "transcript pasted by you", [track], transcript_text=text,
+                                      account=request.account))
 
 
 # ------------------------------------------------------------------ conversations
@@ -310,29 +327,29 @@ def index_manual(request):
 def conversations(request):
     if request.method == "GET":
         from django.db.models import Count
-        qs = Conversation.objects.annotate(n=Count("messages")).filter(n__gt=0)[:100]
+        qs = Conversation.objects.filter(account=request.account).annotate(n=Count("messages")).filter(n__gt=0)[:100]
         return Response({"results": [conversation_dict(c, message_count=c.n) for c in qs]})
     if request.method == "DELETE":
-        Conversation.objects.all().delete()
-        QueryMetric.objects.all().delete()
+        Conversation.objects.filter(account=request.account).delete()
+        QueryMetric.objects.filter(account=request.account).delete()
         return Response(status=204)
     d = _body(request)
     source = None
     if d.get("source_id") is not None:
-        source = _get_or_404(VideoSource, pk=d["source_id"])
+        source = _get_or_404(VideoSource, pk=d["source_id"], user_links__account=request.account)
     # reuse a pristine empty conversation instead of piling up blanks
-    blank = Conversation.objects.filter(messages__isnull=True).first()
+    blank = Conversation.objects.filter(account=request.account, messages__isnull=True).first()
     if blank:
         blank.source = source or blank.source
         blank.save()
         return Response(conversation_dict(blank, with_messages=True), status=200)
-    c = Conversation.objects.create(source=source or VideoSource.objects.first())
+    c = Conversation.objects.create(account=request.account, source=source or _my_sources(request.account).first())
     return Response(conversation_dict(c, with_messages=True), status=201)
 
 
 @api_view(["GET", "PATCH", "DELETE"])
 def conversation_detail(request, pk):
-    c = _get_or_404(Conversation, pk=pk)
+    c = _get_or_404(Conversation, pk=pk, account=request.account)
     if request.method == "DELETE":
         c.delete()
         return Response(status=204)
@@ -347,14 +364,15 @@ def conversation_detail(request, pk):
             if c.messages.exists() and d["source_id"] != c.source_id:
                 raise ApiError("A conversation with messages keeps its source. Start a new chat for another video.",
                                status=409, code="source_locked")
-            c.source = _get_or_404(VideoSource, pk=d["source_id"]) if d["source_id"] is not None else None
+            c.source = (_get_or_404(VideoSource, pk=d["source_id"], user_links__account=request.account)
+                        if d["source_id"] is not None else None)
         c.save()
     return Response(conversation_dict(c, with_messages=True))
 
 
 @api_view(["POST"])
 def conversation_clear(request, pk):
-    c = _get_or_404(Conversation, pk=pk)
+    c = _get_or_404(Conversation, pk=pk, account=request.account)
     c.messages.all().delete()
     c.title = DEFAULT_TITLE
     c.save()
@@ -364,12 +382,13 @@ def conversation_clear(request, pk):
 @api_view(["POST"])
 def ask(request, pk):
     """One RAG turn, streamed as SSE: start → stage* → token* → done | error."""
-    conv = _get_or_404(Conversation, pk=pk)
+    conv = _get_or_404(Conversation, pk=pk, account=request.account)
     d = _body(request)
     if not conv.source_id:
         raise ApiError("Add a video first, then ask your question.", code="no_source")
     source = conv.source
-    cfg = AppSettings.load()
+    cfg = AppSettings.load(request.account)
+    account = request.account
     answer_lang = d.get("answer_lang") or cfg.answer_lang
     if answer_lang not in core.LANG_BY_CODE:
         raise ApiError("Unknown answer language.")
@@ -427,7 +446,7 @@ def ask(request, pk):
             msg = Message.objects.create(conversation=conv, role="assistant", content=answer or note,
                                          reasoning=reasoning, trace=trace)
             QueryMetric.objects.create(
-                video_id=source.video_id, retrieval_s=trace["bridge_s"] + trace["qembed_s"] + trace["mmr_s"],
+                account=account, video_id=source.video_id, retrieval_s=trace["bridge_s"] + trace["qembed_s"] + trace["mmr_s"],
                 model_load_s=trace["model_load_s"], ttft_s=trace["ttft_s"], gen_s=trace["gen_s"],
                 tokens=trace["tokens"], tps=trace["tps"], total_s=trace["total_s"])
             conv.save()
@@ -457,14 +476,15 @@ def ask(request, pk):
 
 @api_view(["GET"])
 def insights(request):
-    history = [metric_dict(m) for m in QueryMetric.objects.all()[:10]]
+    mine = QueryMetric.objects.filter(account=request.account)
+    history = [metric_dict(m) for m in mine[:10]]
     out = {"last": history[0] if history else None, "history": history,
-           "total_queries": QueryMetric.objects.count(), "latest_trace": None, "indexing": None}
+           "total_queries": mine.count(), "latest_trace": None, "indexing": None}
     cid = request.query_params.get("conversation")
     source = None
     if cid:
         try:
-            conv = Conversation.objects.filter(pk=cid).first()
+            conv = Conversation.objects.filter(pk=cid, account=request.account).first()
         except ValueError:
             conv = None
         if conv:
@@ -516,7 +536,7 @@ def embed_check(request):
 
 @api_view(["POST"])
 def cache_clear(request):
-    core.clear_transcript_cache()
+    core.fetch_video_title.cache_clear()          # transcripts are shared and costly to rebuild: users cannot wipe them
     return Response({"ok": True})
 
 

@@ -1,9 +1,14 @@
 from django.urls import path
 
-from . import views
+from . import auth, views
 
 urlpatterns = [
     path("health/", views.health),
+    path("auth/start/", auth.auth_start),
+    path("auth/verify/", auth.auth_verify),
+    path("auth/resend/", auth.auth_resend),
+    path("auth/me/", auth.auth_me),
+    path("auth/logout/", auth.auth_logout),
     path("config/", views.config),
     path("settings/", views.app_settings),
     path("video/inspect/", views.inspect_video),

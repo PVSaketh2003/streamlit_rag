@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
-import { api, ApiError, streamSSE } from './api'
+import { api, ApiError, setUnauthorizedHandler, streamSSE } from './api'
 import { emptyStages, QRY_STAGES, splitReasoning } from './format'
 
 const Ctx = createContext(null)
@@ -17,6 +17,7 @@ export function AppProvider({ children }) {
   const [navOpen, setNavOpen] = useState(false)
   const [live, setLive] = useState(null)
   const [toasts, setToasts] = useState([])
+  const [account, setAccount] = useState(null)
   const [burst, setBurst] = useState(0)
   const [palette, setPalette] = useState(false)
   const abortRef = useRef(null)
@@ -54,7 +55,7 @@ export function AppProvider({ children }) {
     setBoot({ loading: true, error: null, code: null })
     try {
       const cfg = await api.get('/config/')
-      setConfig(cfg); setSettings(cfg.settings); setRuntime(cfg.runtime)
+      setConfig(cfg); setSettings(cfg.settings); setRuntime(cfg.runtime); setAccount(cfg.account || null)
       const [, list] = await Promise.all([refreshSources(), api.get('/conversations/')])
       setConvs(list.results)
       const c = list.results[0]
@@ -68,6 +69,11 @@ export function AppProvider({ children }) {
   }, [refreshSources])
 
   useEffect(() => { init() }, [init])
+  // A request found the session gone (expired / signed out elsewhere): show the sign-in page.
+  useEffect(() => {
+    setUnauthorizedHandler(() => { setAccount(null); setLive(null); setBoot({ loading: false, error: null, code: 'auth_required' }) })
+    return () => setUnauthorizedHandler(null)
+  }, [])
   useEffect(() => {
     const t = setInterval(refreshRuntime, 8000)
     return () => clearInterval(t)
@@ -130,6 +136,13 @@ export function AppProvider({ children }) {
   }, [toast])
 
   const stop = useCallback(() => abortRef.current?.abort(), [])
+
+  const logout = useCallback(async () => {
+    abortRef.current?.abort()
+    try { await api.post('/auth/logout/', {}) } catch { /* cookie is cleared server-side when reachable */ }
+    setConv(null); setConvs([]); setSources([]); setLive(null); setAccount(null); setView('chat'); setNavOpen(false)
+    setBoot({ loading: false, error: null, code: 'auth_required' })
+  }, [])
 
   const ask = useCallback(async (question, regenerate = false) => {
     const cur = convRef.current
@@ -208,7 +221,7 @@ export function AppProvider({ children }) {
     boot, init, config, settings, updateSettings, runtime, refreshRuntime,
     sources, refreshSources, source, convs, conv, setConv, openConv, newChat, renameConv, deleteConv, clearConv,
     useSource, removeSource, view, setView, navOpen, setNavOpen, live, ask, stop, indexVideo,
-    toasts, toast, refreshConvs, burst, palette, setPalette,
+    toasts, toast, refreshConvs, burst, palette, setPalette, account, logout,
   }
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>
 }

@@ -1,17 +1,4 @@
 const BASE = import.meta.env.VITE_API_URL || '/api'
-const TOKEN_KEY = 'janani-access'
-
-export const accessToken = {
-  get() { try { return localStorage.getItem(TOKEN_KEY) || '' } catch { return '' } },
-  set(v) { try { localStorage.setItem(TOKEN_KEY, v) } catch { /* private mode */ } },
-  clear() { try { localStorage.removeItem(TOKEN_KEY) } catch { /* private mode */ } },
-}
-
-function headers(extra = {}) {
-  const t = accessToken.get()
-  return t ? { ...extra, 'X-Access-Token': t } : extra
-}
-
 export class ApiError extends Error {
   constructor(message, status, code, extra) {
     super(message)
@@ -21,13 +8,19 @@ export class ApiError extends Error {
   }
 }
 
+let onUnauthorized = null
+/** The store registers a callback so ANY request that finds the session gone sends the user back to sign-in. */
+export const setUnauthorizedHandler = (fn) => { onUnauthorized = fn }
+
 const NETWORK_MSG = "Can't reach the backend. Make sure the Django server is running on port 8000."
 
-async function failure(res) {
+async function failure(res, path = '') {
   let data = null
   try { data = await res.json() } catch { /* not json */ }
   const e = data?.error || {}
-  return new ApiError(e.message || `Request failed (${res.status})`, res.status, e.code, e)
+  const err = new ApiError(e.message || `Request failed (${res.status})`, res.status, e.code, e)
+  if (res.status === 401 && e.code === 'auth_required' && !path.startsWith('/auth/')) onUnauthorized?.()
+  return err
 }
 
 async function request(method, path, body, signal) {
@@ -35,7 +28,8 @@ async function request(method, path, body, signal) {
   try {
     res = await fetch(BASE + path, {
       method, signal,
-      headers: headers(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+      credentials: 'same-origin',
+      headers: body !== undefined ? { 'Content-Type': 'application/json' } : undefined,
       body: body !== undefined ? JSON.stringify(body) : undefined,
     })
   } catch (e) {
@@ -43,7 +37,7 @@ async function request(method, path, body, signal) {
     throw new ApiError(NETWORK_MSG, 0, 'network')
   }
   if (res.status === 204) return null
-  if (!res.ok) throw await failure(res)
+  if (!res.ok) throw await failure(res, path)
   return res.json()
 }
 
@@ -60,14 +54,15 @@ export async function streamSSE(path, body, onEvent, signal) {
   try {
     res = await fetch(BASE + path, {
       method: 'POST', signal,
-      headers: headers({ 'Content-Type': 'application/json', Accept: 'text/event-stream' }),
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
       body: JSON.stringify(body),
     })
   } catch (e) {
     if (e.name === 'AbortError') throw e
     throw new ApiError(NETWORK_MSG, 0, 'network')
   }
-  if (!res.ok) throw await failure(res)
+  if (!res.ok) throw await failure(res, path)
   const reader = res.body.getReader()
   const decoder = new TextDecoder()
   let buf = ''

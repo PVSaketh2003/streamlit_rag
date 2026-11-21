@@ -75,7 +75,7 @@ MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
     "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.middleware.common.CommonMiddleware",
-    "studio.access.AccessTokenMiddleware",
+    "studio.auth.AuthMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
 
@@ -145,10 +145,28 @@ if not DEBUG:
     SECURE_REFERRER_POLICY = "same-origin"
     X_FRAME_OPTIONS = "DENY"
 
-# Optional shared access code. When set, every /api/ call (except /api/health/) must send
-# header `X-Access-Token: <code>`. Strongly recommended for a public deployment: it keeps
-# strangers from spending your Groq/Gemini quota or deleting your data.
-APP_ACCESS_TOKEN = env("APP_ACCESS_TOKEN", "")
+# ---- sign-in: email + password, then a one-time code emailed from EMAIL_HOST_USER ----
+# Optional invite list. If either is set, only these emails / email domains can sign up or sign in.
+ALLOWED_EMAILS = {e.lower() for e in env_list("ALLOWED_EMAILS")}
+ALLOWED_EMAIL_DOMAINS = {d.lower().lstrip("@") for d in env_list("ALLOWED_EMAIL_DOMAINS")}
+
+# SMTP (Gmail by default). EMAIL_HOST_PASSWORD must be a Google *App Password* (spaces are ignored).
+# Render's FREE web services block outbound ports 25/465/587: use a paid instance, or BREVO_API_KEY (HTTPS) instead.
+# Only this account inherits the chats / videos created before sign-in existed (never "whoever signs up first").
+OWNER_EMAIL = env("OWNER_EMAIL", env("EMAIL_HOST_USER", "pvsaketh1@gmail.com")).strip().lower()
+EMAIL_HOST = env("EMAIL_HOST", "smtp.gmail.com")
+EMAIL_PORT = int(env("EMAIL_PORT", "587"))
+EMAIL_HOST_USER = env("EMAIL_HOST_USER", "pvsaketh1@gmail.com")
+EMAIL_HOST_PASSWORD = (env("EMAIL_HOST_PASSWORD") or env("SMTP_PASSWORD") or env("GMAIL_APP_PASSWORD") or "").replace(" ", "")
+EMAIL_USE_SSL = env_bool("EMAIL_USE_SSL", EMAIL_PORT == 465)
+EMAIL_USE_TLS = env_bool("EMAIL_USE_TLS", EMAIL_PORT == 587 and not EMAIL_USE_SSL)
+EMAIL_TIMEOUT = int(env("EMAIL_TIMEOUT", "15"))
+DEFAULT_FROM_EMAIL_ADDRESS = env("DEFAULT_FROM_EMAIL_ADDRESS", EMAIL_HOST_USER)
+DEFAULT_FROM_EMAIL = env("DEFAULT_FROM_EMAIL", f"Janani <{DEFAULT_FROM_EMAIL_ADDRESS}>")
+BREVO_API_KEY = env("BREVO_API_KEY", "")
+EMAIL_PROVIDER = (env("EMAIL_PROVIDER") or ("brevo" if BREVO_API_KEY else "smtp" if EMAIL_HOST_PASSWORD else "console")).lower()
+EMAIL_BACKEND = ("django.core.mail.backends.console.EmailBackend" if EMAIL_PROVIDER == "console"
+                 else "django.core.mail.backends.smtp.EmailBackend")
 
 # ---- API / CORS (the frontend is same-origin in production; CORS only matters for other setups) ----
 CORS_ALLOWED_ORIGINS = env_list(

@@ -1,6 +1,6 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
-import { BarChart3, Check, Command, History, Library, MessageSquare, Pencil, Plus, Trash2, X } from 'lucide-react'
+import { BarChart3, Check, Command, History, Library, LogOut, MessageSquare, Pencil, Plus, Trash2, X } from 'lucide-react'
 import { useApp } from '../store'
 import { timeAgo } from '../format'
 
@@ -10,6 +10,34 @@ export const Brand = () => (
     <span className="brand-name">Janani<em>studio</em></span>
   </div>
 )
+
+function AccountMenu() {
+  const { account, logout } = useApp()
+  const [open, setOpen] = useState(false)
+  const ref = useRef(null)
+  useEffect(() => {
+    if (!open) return
+    const off = (e) => { if (!ref.current?.contains(e.target)) setOpen(false) }
+    const esc = (e) => { if (e.key === 'Escape') setOpen(false) }
+    document.addEventListener('pointerdown', off); document.addEventListener('keydown', esc)
+    return () => { document.removeEventListener('pointerdown', off); document.removeEventListener('keydown', esc) }
+  }, [open])
+  if (!account) return null
+  return (
+    <div className="acct" ref={ref}>
+      <button className="avatar-btn" onClick={() => setOpen((o) => !o)} aria-label="Account menu" aria-expanded={open}>{account.email[0].toUpperCase()}</button>
+      <AnimatePresence>
+        {open && (
+          <motion.div className="acct-pop" initial={{ opacity: 0, y: -6, scale: .97 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: -6, scale: .97 }} transition={{ duration: .15 }}>
+            <small>Signed in as</small>
+            <b title={account.email}>{account.email}</b>
+            <button onClick={logout}><LogOut size={15} />Sign out</button>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  )
+}
 
 const NAV = [['chat', 'Chat', MessageSquare], ['sources', 'Sources', Library], ['insights', 'Insights', BarChart3]]
 
@@ -38,6 +66,7 @@ export function TopBar() {
           <i className={`dot ${rt.llm_verified ? 'on' : rt.llm_ready ? 'set' : 'off'}`} />{rt.llm_short || 'Grok'}
           <i className={`dot ${rt.embedding_verified ? 'on' : rt.embedding_ready ? 'set' : 'off'}`} />Gemini
         </button>
+        <AccountMenu />
       </div>
     </header>
   )

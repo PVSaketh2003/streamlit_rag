@@ -42,8 +42,57 @@ class Chunk(models.Model):
         constraints = [models.UniqueConstraint(fields=["source", "idx"], name="uniq_chunk_per_source")]
 
 
+class Account(models.Model):
+    """A person who signed in. Email ownership is proven by a one-time code at sign-up and at every login."""
+    email = models.EmailField(max_length=254, unique=True)              # always stored lowercase
+    password_hash = models.CharField(max_length=256)
+    is_active = models.BooleanField(default=True)
+    created = models.DateTimeField(auto_now_add=True)
+    last_login = models.DateTimeField(null=True, blank=True)
+
+    def __str__(self):
+        return self.email
+
+
+class LoginChallenge(models.Model):
+    """One pending email one-time code (login or sign-up). The code itself is never stored, only an HMAC of it."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    email = models.EmailField(max_length=254, db_index=True)
+    purpose = models.CharField(max_length=8)                            # login | signup
+    code_hash = models.CharField(max_length=64)
+    password_hash = models.CharField(max_length=256, blank=True, default="")   # sign-up only: becomes the account password
+    attempts = models.PositiveSmallIntegerField(default=0)              # wrong guesses so far
+    sends = models.PositiveSmallIntegerField(default=1)                 # emails sent for this challenge
+    last_sent = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+    consumed_at = models.DateTimeField(null=True, blank=True)
+    created = models.DateTimeField(auto_now_add=True)
+    ip = models.CharField(max_length=64, blank=True, default="")
+
+
+class AuthSession(models.Model):
+    """Browser session. Only a SHA-256 of the random token is stored; the token lives in an HttpOnly cookie."""
+    account = models.ForeignKey(Account, related_name="sessions", on_delete=models.CASCADE)
+    token_hash = models.CharField(max_length=64, unique=True)
+    created = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+    last_used = models.DateTimeField(auto_now_add=True)
+    user_agent = models.CharField(max_length=200, blank=True, default="")
+
+
+class UserSource(models.Model):
+    """Which video indexes a person has added. The FAISS index itself is shared (and reused) between people."""
+    account = models.ForeignKey(Account, related_name="user_sources", on_delete=models.CASCADE)
+    source = models.ForeignKey(VideoSource, related_name="user_links", on_delete=models.CASCADE)
+    added = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["account", "source"], name="uniq_account_source")]
+
+
 class Conversation(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    account = models.ForeignKey(Account, null=True, blank=True, related_name="conversations", on_delete=models.CASCADE)
     title = models.CharField(max_length=120, default="New conversation")
     source = models.ForeignKey(VideoSource, null=True, blank=True, on_delete=models.SET_NULL,
                                related_name="conversations")
@@ -68,6 +117,7 @@ class Message(models.Model):
 
 
 class QueryMetric(models.Model):
+    account = models.ForeignKey(Account, null=True, blank=True, on_delete=models.CASCADE)
     created = models.DateTimeField(auto_now_add=True)
     video_id = models.CharField(max_length=16)
     retrieval_s = models.FloatField(null=True)
@@ -90,8 +140,14 @@ class AppSettings(models.Model):
     bridge_boost = models.BooleanField(default=True)
     show_reasoning = models.BooleanField(default=False)
 
+    account = models.OneToOneField(Account, null=True, blank=True, related_name="settings", on_delete=models.CASCADE)
+
     @classmethod
-    def load(cls):
+    def load(cls, account=None):
+        """Per-account settings; the old global row (pk=1) is only used when no account is given."""
+        if account is not None:
+            obj, _ = cls.objects.get_or_create(account=account)
+            return obj
         obj, _ = cls.objects.get_or_create(pk=1)
         return obj
 

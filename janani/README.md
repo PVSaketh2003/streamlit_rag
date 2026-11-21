@@ -14,6 +14,26 @@ MMR (k=3, fetch_k=15, λ=0.5) → Groq / xAI Grok chat model, streamed.
 | Vectors | `faiss-cpu` IndexFlatL2 + LangChain-identical MMR (`backend/studio/vstore.py`, verified against langchain-community in CI) |
 | CI/CD | GitHub Actions: backend tests on Postgres → frontend tests + build → Render deploy hook → wait until the tested commit is live |
 
+## Sign-in (email + password + emailed one-time code)
+
+Every API call except `/api/health/` and the `/api/auth/*` endpoints needs a session. People sign in with an email and
+password; a 6-digit code is then emailed from **pvsaketh1@gmail.com** (`EMAIL_HOST_USER`) to confirm it is them.
+An unknown email is a sign-up: the account is created only after the code is verified.
+
+- Codes: 6 digits, valid 10 minutes, single use, stored only as an HMAC, 5 wrong guesses lock them, resend cooldown 45 s.
+- Sessions: random token in an `HttpOnly` + `Secure` + `SameSite=Lax` cookie (30 days); only its SHA-256 is stored.
+- Throttling: failed passwords per email and per IP, codes per email per hour; `Origin` check on state-changing requests.
+- Data is per account: chats, settings and the list of videos are private; a video index itself is shared and reused.
+- `ALLOWED_EMAILS` / `ALLOWED_EMAIL_DOMAINS` make the site invite-only (recommended on a public URL, otherwise anyone can
+  sign up and use your Groq/Gemini quota). `OWNER_EMAIL` (default `EMAIL_HOST_USER`) inherits pre-existing data.
+
+**Email delivery (pick one):**
+1. **Gmail SMTP** - set `EMAIL_HOST_PASSWORD` to a Google *App Password* for `pvsaketh1@gmail.com`
+   (Google Account > Security > 2-Step Verification > App passwords). **Render's free web services block outbound SMTP
+   (ports 25/465/587), so this needs a paid Render instance** ([docs](https://render.com/docs/free)).
+2. **Brevo HTTPS API** - works on the free plan: create a free Brevo account, verify the sender address, set `BREVO_API_KEY`.
+`/api/health/` reports the provider (never secrets) so a broken setup is easy to spot.
+
 ## Local development
 
 ```bash
@@ -32,8 +52,8 @@ region Singapore. Auto-deploy is **off**: GitHub Actions deploys only commits th
 1. **Create the Blueprint** — render.com → New → **Blueprint** → connect GitHub → pick `PVSaketh2003/streamlit_rag`
    (branch `main`). Render reads `render.yaml` and creates the service + database.
 2. **Fill in the secret env vars** Render asks for: `GROQ_API_KEY` (or `XAI_API_KEY`), `GEMINI_API_KEY`,
-   `APP_ACCESS_TOKEN` (the access code you will type to open the app). `DJANGO_SECRET_KEY` and `DATABASE_URL`
-   are generated/wired automatically.
+   `EMAIL_HOST_PASSWORD` (Gmail App Password, paid Render instance) or `BREVO_API_KEY` (free plan) for the sign-in emails,
+   and optionally `ALLOWED_EMAILS`. `DJANGO_SECRET_KEY` and `DATABASE_URL` are generated/wired automatically.
 3. **Deploy hook → GitHub** — Render → `janani` service → Settings → **Deploy Hook** → copy the URL →
    GitHub repo → Settings → Secrets and variables → Actions → New secret `RENDER_DEPLOY_HOOK_URL`.
    If Render gave the service a different address than `https://janani.onrender.com`, also add a repository

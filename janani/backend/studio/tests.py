@@ -9,10 +9,33 @@ import numpy as np
 from django.test import Client, TestCase, override_settings
 
 from . import rag_core as core
-from .models import Conversation, Message, QueryMetric, TranscriptCache, VideoSource
+from .models import (Account, AuthSession, Conversation, LoginChallenge, Message, QueryMetric, TranscriptCache,
+                     UserSource, VideoSource)
 from .vstore import VectorIndex, maximal_marginal_relevance
 
 DIM = 32
+PASSWORD = "correct-horse-9"
+
+
+def make_account(email="owner@example.com", password=PASSWORD):
+    from django.contrib.auth.hashers import make_password
+    return Account.objects.create(email=email, password_hash=make_password(password))
+
+
+def login_client(account=None):
+    """A test client that already carries a valid session cookie for `account`."""
+    import secrets
+    from datetime import timedelta
+    from django.utils import timezone
+    from .auth import SESSION_COOKIE, _hash_token
+    account = account or make_account()
+    token = secrets.token_urlsafe(32)
+    AuthSession.objects.create(account=account, token_hash=_hash_token(token),
+                               expires_at=timezone.now() + timedelta(days=1))
+    c = Client()
+    c.cookies[SESSION_COOKIE] = token
+    c.account = account
+    return c
 
 
 def fake_vec(text):
@@ -194,10 +217,9 @@ class VectorStoreTests(TestCase):
 
 # ------------------------------------------------------------------ API flows
 
-@override_settings(APP_ACCESS_TOKEN="")
 class ApiTests(TestCase):
     def setUp(self):
-        self.c = Client()
+        self.c = login_client()
         core._indexes.clear()
         patches = [
             mock.patch.object(core, "_embed_batch", side_effect=fake_embed_batch),
@@ -312,18 +334,6 @@ class ApiTests(TestCase):
         self.assertNotEqual(r.status_code, 406)
 
 
-@override_settings(APP_ACCESS_TOKEN="s3cret-code")
-class AccessGateTests(TestCase):
-    def test_requires_token_except_health(self):
-        c = Client()
-        self.assertEqual(c.get("/api/health/").status_code, 200)
-        r = c.get("/api/config/")
-        self.assertEqual(r.status_code, 401)
-        self.assertEqual(r.json()["error"]["code"], "access_required")
-        self.assertEqual(c.get("/api/config/", HTTP_X_ACCESS_TOKEN="wrong").status_code, 401)
-        self.assertEqual(c.get("/api/config/", HTTP_X_ACCESS_TOKEN="s3cret-code").status_code, 200)
-
-
 class ServingTests(TestCase):
     """The production service serves the React build and the API from one origin."""
 
@@ -343,8 +353,9 @@ class ServingTests(TestCase):
                     self.assertEqual(r.status_code, 200, path)
                     self.assertIn(b'id=root', r.content)
                     self.assertEqual(r["Cache-Control"], "no-cache")
-        self.assertEqual(Client().get("/api/config/").status_code, 200)       # API is not swallowed by the SPA route
-        self.assertEqual(Client().get("/api/does-not-exist/").status_code, 404)
+        c = login_client()
+        self.assertEqual(c.get("/api/config/").status_code, 200)             # API is not swallowed by the SPA route
+        self.assertEqual(c.get("/api/does-not-exist/").status_code, 404)
 
 
 # ------------------------------------------------------------------ Gemini audio-transcription fallback
@@ -381,9 +392,9 @@ class GeminiModelPickTests(TestCase):
         self.assertFalse(core._model_unusable("429 RESOURCE_EXHAUSTED"))
 
 
-@override_settings(APP_ACCESS_TOKEN="")
 class GeminiFallbackTests(TestCase):
     def setUp(self):
+        self.account = make_account("gem@example.com")
         core._indexes.clear()
         core._state.pop("yt_blocked_until", None)
         self.addCleanup(core._state.pop, "yt_blocked_until", None)
@@ -608,7 +619,7 @@ class GeminiFallbackTests(TestCase):
                 raise RequestBlocked(v)
 
         text = "LANG: en\n" + ("A sequential chain runs steps one after another. " * 30)
-        c = Client()
+        c = login_client(self.account)
         with mock.patch.object(core, "_yt_api", return_value=Blocked()), \
                 mock.patch.object(core, "yt_dlp_available", return_value=False), \
                 mock.patch.object(core, "_transcribe_chunk", side_effect=lambda *a: text if a[3] == 0 else (_ for _ in ()).throw(RuntimeError("400 INVALID_ARGUMENT"))):
@@ -636,5 +647,446 @@ class GeminiFallbackTests(TestCase):
 
         with mock.patch.object(core, "GEMINI_API_KEY", ""), mock.patch.object(core, "_yt_api", return_value=Blocked()), \
                 mock.patch.object(core, "yt_dlp_available", return_value=False):
-            r = Client().post("/api/sources/index/", json.dumps({"url": "yyyyyyyyyyy"}), content_type="application/json")
+            r = login_client(self.account).post("/api/sources/index/", json.dumps({"url": "yyyyyyyyyyy"}),
+                                                content_type="application/json")
         self.assertEqual(r.status_code, 503)
+
+
+
+# ------------------------------------------------------------------ email one-time-code sign-in
+
+import re as _re
+from datetime import timedelta as _td
+
+from django.core import mail
+from django.utils import timezone as _tz
+
+from . import mailer
+from .auth import OTP_MAX_ATTEMPTS, RESEND_COOLDOWN_S, SESSION_COOKIE
+
+
+def _code_from_outbox(index=-1):
+    m = _re.search(r"\b(\d{6})\b", mail.outbox[index].subject)
+    assert m, mail.outbox[index].subject
+    return m.group(1)
+
+
+class AuthFlowTests(TestCase):
+    def setUp(self):
+        self.c = Client()
+        mail.outbox = []
+        from django.core.cache import cache
+        cache.clear()
+
+    def post(self, path, body, client=None, **extra):
+        return (client or self.c).post(path, json.dumps(body), content_type="application/json", **extra)
+
+    def start(self, email="new@example.com", password=PASSWORD, client=None):
+        return self.post("/api/auth/start/", {"email": email, "password": password}, client)
+
+    def test_api_requires_login_but_health_is_open(self):
+        self.assertEqual(self.c.get("/api/health/").status_code, 200)
+        r = self.c.get("/api/config/")
+        self.assertEqual(r.status_code, 401)
+        self.assertEqual(r.json()["error"]["code"], "auth_required")
+        self.assertEqual(self.c.get("/api/auth/me/").status_code, 401)
+
+    def test_signup_with_emailed_code_creates_account_and_session(self):
+        r = self.start("New.User@Example.com")
+        self.assertEqual(r.status_code, 200, r.content)
+        body = r.json()
+        self.assertEqual(body["purpose"], "signup")
+        self.assertEqual(body["email"], "new.user@example.com")                 # normalised
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(mail.outbox[0].to, ["new.user@example.com"])
+        self.assertIn("Janani", mail.outbox[0].from_email)
+        self.assertFalse(Account.objects.filter(email="new.user@example.com").exists())   # not yet: email unverified
+        code = _code_from_outbox()
+        ok = self.post("/api/auth/verify/", {"challenge_id": body["challenge_id"], "code": code})
+        self.assertEqual(ok.status_code, 200, ok.content)
+        self.assertEqual(ok.json()["account"]["email"], "new.user@example.com")
+        cookie = ok.cookies[SESSION_COOKIE]
+        self.assertTrue(cookie["httponly"])
+        self.assertEqual(cookie["samesite"], "Lax")
+        acct = Account.objects.get(email="new.user@example.com")
+        self.assertNotIn(PASSWORD, acct.password_hash)                          # hashed, never plain
+        self.assertEqual(self.c.get("/api/auth/me/").json()["account"]["email"], "new.user@example.com")
+        self.assertEqual(self.c.get("/api/config/").status_code, 200)
+
+    def test_login_with_password_then_code(self):
+        make_account("me@example.com")
+        r = self.start("me@example.com")
+        self.assertEqual(r.json()["purpose"], "login")
+        ok = self.post("/api/auth/verify/", {"challenge_id": r.json()["challenge_id"], "code": _code_from_outbox()})
+        self.assertEqual(ok.status_code, 200)
+        self.assertIsNotNone(Account.objects.get(email="me@example.com").last_login)
+
+    def test_wrong_password_sends_no_email(self):
+        make_account("me@example.com")
+        r = self.start("me@example.com", "wrong-password-1")
+        self.assertEqual(r.status_code, 401)
+        self.assertEqual(r.json()["error"]["code"], "invalid_credentials")
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_repeated_wrong_passwords_are_throttled(self):
+        make_account("me@example.com")
+        codes = [self.start("me@example.com", f"wrong-password-{i}").status_code for i in range(10)]
+        self.assertEqual(codes[:8], [401] * 8)
+        self.assertEqual(codes[8], 429)
+        self.assertEqual(self.start("me@example.com", PASSWORD).status_code, 429)   # even the right one waits
+
+    def test_weak_and_invalid_input_rejected(self):
+        self.assertEqual(self.start("not-an-email").status_code, 400)
+        self.assertEqual(self.start("a@example.com", "short").status_code, 400)
+        self.assertEqual(self.start("a@example.com", "12345678").status_code, 400)
+        self.assertEqual(self.post("/api/auth/start/", {"email": "a@example.com"}).status_code, 400)
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_wrong_code_locks_after_max_attempts(self):
+        cid = self.start().json()["challenge_id"]
+        good = _code_from_outbox()
+        bad = "000000" if good != "000000" else "111111"
+        left = []
+        for _ in range(OTP_MAX_ATTEMPTS):
+            r = self.post("/api/auth/verify/", {"challenge_id": cid, "code": bad})
+            self.assertEqual(r.status_code, 400)
+            left.append(r.json()["error"]["attempts_left"])
+        self.assertEqual(left, [4, 3, 2, 1, 0])
+        r = self.post("/api/auth/verify/", {"challenge_id": cid, "code": good})       # right code, too late
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(r.json()["error"]["code"], "challenge_invalid")
+        self.assertFalse(Account.objects.filter(email="new@example.com").exists())
+
+    def test_code_is_single_use_and_expires(self):
+        cid = self.start().json()["challenge_id"]
+        code = _code_from_outbox()
+        self.assertEqual(self.post("/api/auth/verify/", {"challenge_id": cid, "code": code}).status_code, 200)
+        again = self.post("/api/auth/verify/", {"challenge_id": cid, "code": code}, Client())
+        self.assertEqual(again.status_code, 400)
+        self.assertEqual(again.json()["error"]["code"], "challenge_invalid")
+        # expiry
+        mail.outbox = []
+        c2 = Client()
+        cid2 = self.start("late@example.com", client=c2).json()["challenge_id"]
+        LoginChallenge.objects.filter(pk=cid2).update(expires_at=_tz.now() - _td(seconds=1))
+        r = self.post("/api/auth/verify/", {"challenge_id": cid2, "code": _code_from_outbox()}, c2)
+        self.assertEqual(r.json()["error"]["code"], "code_expired")
+
+    def test_code_is_stored_hashed_only(self):
+        cid = self.start().json()["challenge_id"]
+        code = _code_from_outbox()
+        ch = LoginChallenge.objects.get(pk=cid)
+        self.assertNotIn(code, ch.code_hash)
+        self.assertEqual(len(ch.code_hash), 64)
+        self.assertNotIn(PASSWORD, ch.password_hash)
+
+    def test_resend_cooldown_then_new_code_replaces_old(self):
+        cid = self.start().json()["challenge_id"]
+        old = _code_from_outbox()
+        r = self.post("/api/auth/resend/", {"challenge_id": cid})
+        self.assertEqual(r.status_code, 429)
+        self.assertEqual(r.json()["error"]["code"], "cooldown")
+        LoginChallenge.objects.filter(pk=cid).update(last_sent=_tz.now() - _td(seconds=RESEND_COOLDOWN_S + 1))
+        self.assertEqual(self.post("/api/auth/resend/", {"challenge_id": cid}).status_code, 200)
+        self.assertEqual(len(mail.outbox), 2)
+        new = _code_from_outbox()
+        if new != old:
+            self.assertEqual(self.post("/api/auth/verify/", {"challenge_id": cid, "code": old}).status_code, 400)
+        self.assertEqual(self.post("/api/auth/verify/", {"challenge_id": cid, "code": new}).status_code, 200)
+
+    def test_requesting_a_new_start_invalidates_the_older_code(self):
+        c = Client()
+        first = self.start(client=c).json()["challenge_id"]
+        LoginChallenge.objects.filter(pk=first).update(last_sent=_tz.now() - _td(seconds=RESEND_COOLDOWN_S + 1))
+        second = self.start(client=c).json()["challenge_id"]
+        self.assertNotEqual(first, second)
+        r = self.post("/api/auth/verify/", {"challenge_id": first, "code": _code_from_outbox(0)}, c)
+        self.assertEqual(r.json()["error"]["code"], "challenge_invalid")
+
+    def test_logout_ends_the_session(self):
+        c = login_client()
+        self.assertEqual(c.get("/api/config/").status_code, 200)
+        self.assertEqual(c.post("/api/auth/logout/", "{}", content_type="application/json").status_code, 204)
+        self.assertEqual(c.get("/api/config/").status_code, 401)
+
+    def test_expired_session_is_rejected(self):
+        c = login_client()
+        AuthSession.objects.update(expires_at=_tz.now() - _td(seconds=1))
+        self.assertEqual(c.get("/api/config/").status_code, 401)
+
+    def test_cross_site_requests_are_blocked(self):
+        c = login_client()
+        evil = c.post("/api/conversations/", "{}", content_type="application/json", HTTP_ORIGIN="https://evil.example")
+        self.assertEqual(evil.status_code, 403)
+        self.assertEqual(evil.json()["error"]["code"], "bad_origin")
+        same = c.post("/api/conversations/", "{}", content_type="application/json", HTTP_ORIGIN="http://testserver")
+        self.assertIn(same.status_code, (200, 201))
+        # a dev-server origin is only trusted while DEBUG is on
+        dev = dict(content_type="application/json", HTTP_ORIGIN="http://127.0.0.1:5180")
+        with override_settings(DEBUG=False):
+            self.assertEqual(c.post("/api/conversations/", "{}", **dev).status_code, 403)
+        with override_settings(DEBUG=True):
+            self.assertIn(c.post("/api/conversations/", "{}", **dev).status_code, (200, 201))
+        fwd = c.post("/api/conversations/", "{}", content_type="application/json",
+                     HTTP_ORIGIN="https://janani.pvsairamsaketh.in", HTTP_X_FORWARDED_HOST="janani.pvsairamsaketh.in")
+        self.assertIn(fwd.status_code, (200, 201))
+
+    def test_invite_list_restricts_signups(self):
+        with override_settings(ALLOWED_EMAILS={"ok@example.com"}, ALLOWED_EMAIL_DOMAINS={"corp.test"}):
+            self.assertEqual(self.start("stranger@example.com").status_code, 403)
+            self.assertEqual(self.start("ok@example.com").status_code, 200)
+            self.assertEqual(self.start("boss@corp.test", client=Client()).status_code, 200)
+
+    def test_only_the_owner_adopts_pre_login_data(self):
+        orphan = Conversation.objects.create(title="from before sign-in")
+        src = VideoSource.objects.create(key="v:en", video_id="aaaaaaaaaaa", lang_code="en", lang_name="English",
+                                         lang_kind="manual", index_file="x")
+        # a stranger who signs up FIRST gets nothing
+        cid0 = self.start("stranger@example.com", client=Client()).json()["challenge_id"]
+        c0 = Client()
+        self.post("/api/auth/verify/", {"challenge_id": cid0, "code": _code_from_outbox()}, c0)
+        self.assertEqual(c0.get("/api/conversations/").json()["results"], [])
+        orphan.refresh_from_db()
+        self.assertIsNone(orphan.account_id)
+        mail.outbox = []
+        with override_settings(OWNER_EMAIL="first@example.com"):
+            cid = self.start("first@example.com").json()["challenge_id"]
+            self.post("/api/auth/verify/", {"challenge_id": cid, "code": _code_from_outbox()})
+        acct = Account.objects.get(email="first@example.com")
+        orphan.refresh_from_db()
+        self.assertEqual(orphan.account_id, acct.id)
+        self.assertTrue(UserSource.objects.filter(account=acct, source=src).exists())
+        # a second person does NOT get the first person's data
+        mail.outbox = []
+        c2 = Client()
+        cid2 = self.start("second@example.com", client=c2).json()["challenge_id"]
+        self.post("/api/auth/verify/", {"challenge_id": cid2, "code": _code_from_outbox()}, c2)
+        self.assertEqual(c2.get("/api/conversations/").json()["results"], [])
+        self.assertEqual(c2.get("/api/sources/").json()["results"], [])
+
+    def test_email_provider_failure_returns_503_and_leaves_no_challenge(self):
+        with mock.patch.object(mailer, "send_otp", side_effect=mailer.EmailSendError("boom", "hint")):
+            r = self.start()
+        self.assertEqual(r.status_code, 503)
+        self.assertEqual(r.json()["error"]["code"], "email_failed")
+        self.assertNotIn("boom", r.content.decode())                           # internal detail never leaks
+        self.assertEqual(LoginChallenge.objects.count(), 0)
+
+    def test_email_not_configured_returns_clear_503(self):
+        with mock.patch.object(mailer, "send_otp", side_effect=mailer.EmailNotConfigured("no key")):
+            r = self.start()
+        self.assertEqual(r.status_code, 503)
+        self.assertEqual(r.json()["error"]["code"], "email_not_configured")
+
+    def test_health_reports_mail_setup_without_secrets(self):
+        body = self.c.get("/api/health/").json()
+        self.assertIn("provider", body["email"])
+        self.assertNotIn("password", json.dumps(body).lower())
+
+
+class DataIsolationTests(TestCase):
+    """Two people must never see or touch each other's chats or videos."""
+
+    def setUp(self):
+        self.a = login_client(make_account("a@example.com"))
+        self.b = login_client(make_account("b@example.com"))
+        for p in [mock.patch.object(core, "_embed_batch", side_effect=fake_embed_batch),
+                  mock.patch.object(core, "_gemini_client", return_value=None),
+                  mock.patch.object(core, "fetch_video_title", return_value="T")]:
+            p.start()
+            self.addCleanup(p.stop)
+        core._indexes.clear()
+
+    def post(self, c, path, body, **kw):
+        return c.post(path, json.dumps(body), content_type="application/json", **kw)
+
+    def index(self, c, vid="5hjrPILA3-8"):
+        return sse_events(self.post(c, "/api/sources/manual/", {"url": vid, "text": TRANSCRIPT, "lang_code": "en"}))
+
+    def test_conversations_are_private(self):
+        self.index(self.a)
+        src = self.a.get("/api/sources/").json()["results"][0]
+        conv = self.post(self.a, "/api/conversations/", {"source_id": src["id"]}).json()
+        self.assertEqual(self.b.get(f"/api/conversations/{conv['id']}/").status_code, 404)
+        self.assertEqual(self.post(self.b, f"/api/conversations/{conv['id']}/clear/", {}).status_code, 404)
+        self.assertEqual(self.b.delete(f"/api/conversations/{conv['id']}/").status_code, 404)
+        self.assertEqual(self.post(self.b, f"/api/conversations/{conv['id']}/ask/", {"question": "hello there"}).status_code, 404)
+        self.assertEqual(self.b.get("/api/conversations/").json()["results"], [])
+        self.assertEqual(self.a.get(f"/api/conversations/{conv['id']}/").status_code, 200)
+
+    def test_sources_are_listed_per_person_but_the_index_is_shared(self):
+        self.index(self.a)
+        self.assertEqual(self.b.get("/api/sources/").json()["results"], [])
+        self.assertEqual(VideoSource.objects.count(), 1)
+        r = self.index(self.b)                                                    # same video: reused, no second index
+        self.assertTrue(r[-1][1]["reused"])
+        self.assertEqual(VideoSource.objects.count(), 1)
+        self.assertEqual(len(self.b.get("/api/sources/").json()["results"]), 1)
+        sid = self.a.get("/api/sources/").json()["results"][0]["id"]
+        # B cannot start a chat on a source B has not added
+        c3 = login_client(make_account("c@example.com"))
+        self.assertEqual(self.post(c3, "/api/conversations/", {"source_id": sid}).status_code, 404)
+
+    def test_removing_a_source_keeps_it_for_the_other_person(self):
+        self.index(self.a)
+        self.index(self.b)
+        sid = self.a.get("/api/sources/").json()["results"][0]["id"]
+        self.assertEqual(self.a.delete(f"/api/sources/{sid}/").status_code, 204)
+        self.assertEqual(self.a.get("/api/sources/").json()["results"], [])
+        self.assertEqual(len(self.b.get("/api/sources/").json()["results"]), 1)
+        self.assertTrue(VideoSource.objects.filter(pk=sid).exists())              # still used by B
+        self.assertEqual(self.b.delete(f"/api/sources/{sid}/").status_code, 204)
+        self.assertFalse(VideoSource.objects.filter(pk=sid).exists())             # last person frees the index
+
+    def test_cannot_delete_a_source_you_never_added(self):
+        self.index(self.a)
+        sid = self.a.get("/api/sources/").json()["results"][0]["id"]
+        self.assertEqual(self.b.delete(f"/api/sources/{sid}/").status_code, 404)
+        self.assertTrue(VideoSource.objects.filter(pk=sid).exists())
+
+    def test_settings_are_per_person(self):
+        self.assertEqual(self.a.patch("/api/settings/", json.dumps({"max_tokens": 2048}),
+                                      content_type="application/json").json()["max_tokens"], 2048)
+        self.assertEqual(self.b.get("/api/settings/").json()["max_tokens"], 1024)
+
+    def test_delete_all_chats_only_deletes_my_chats(self):
+        self.post(self.a, "/api/conversations/", {})
+        self.post(self.b, "/api/conversations/", {})
+        self.assertEqual(self.a.delete("/api/conversations/").status_code, 204)
+        self.assertEqual(Conversation.objects.filter(account=self.b.account).count(), 1)
+        self.assertEqual(Conversation.objects.filter(account=self.a.account).count(), 0)
+
+    def test_shared_transcript_cache_cannot_be_wiped_by_a_user(self):
+        TranscriptCache.objects.create(video_id="zzzzzzzzzzz", lang_code="en", text="keep me", origin="gemini")
+        self.assertEqual(self.post(self.a, "/api/cache/clear/", {}).status_code, 200)
+        self.assertTrue(TranscriptCache.objects.filter(video_id="zzzzzzzzzzz").exists())
+
+
+# ------------------------------------------------------------------ mailer: providers, HTML, real SMTP protocol
+
+class MailerTests(TestCase):
+    def setUp(self):
+        mail.outbox = []
+
+    def test_message_contains_code_and_expiry_in_text_and_html(self):
+        subject, text, html = mailer._message("482913", "login", 10)
+        self.assertIn("482913", subject)
+        self.assertIn("482913", text)
+        self.assertIn("10 minutes", text)
+        for digit in "482913":
+            self.assertIn(f">{digit}</span>", html)
+        self.assertIn("creating", mailer._message("111111", "signup", 10)[1].lower())
+
+    def test_sends_html_and_plain_parts_from_the_configured_sender(self):
+        with override_settings(EMAIL_PROVIDER="smtp", DEFAULT_FROM_EMAIL="Janani <pvsaketh1@gmail.com>"):
+            mailer.send_otp("someone@example.com", "123456", "login")
+        m = mail.outbox[0]
+        self.assertEqual(m.from_email, "Janani <pvsaketh1@gmail.com>")
+        self.assertEqual(m.to, ["someone@example.com"])
+        self.assertIn("123456", m.body)
+        self.assertEqual(m.alternatives[0][1], "text/html")
+
+    def test_brevo_https_provider_posts_expected_payload(self):
+        seen = {}
+
+        class Resp:
+            status = 201
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        def fake_urlopen(req, timeout=None):
+            seen["url"], seen["headers"], seen["body"] = req.full_url, dict(req.header_items()), json.loads(req.data)
+            return Resp()
+
+        with override_settings(EMAIL_PROVIDER="brevo", BREVO_API_KEY="brevo-key", DEFAULT_FROM_EMAIL_ADDRESS="pvsaketh1@gmail.com"), \
+                mock.patch("urllib.request.urlopen", fake_urlopen):
+            mailer.send_otp("someone@example.com", "654321", "signup")
+        self.assertEqual(seen["url"], "https://api.brevo.com/v3/smtp/email")
+        self.assertEqual(seen["headers"]["Api-key"], "brevo-key")
+        self.assertEqual(seen["body"]["to"], [{"email": "someone@example.com"}])
+        self.assertEqual(seen["body"]["sender"]["email"], "pvsaketh1@gmail.com")
+        self.assertIn("654321", seen["body"]["textContent"])
+
+    def test_smtp_failures_are_translated_with_actionable_hints(self):
+        import smtplib
+        with override_settings(EMAIL_PROVIDER="smtp"):
+            with mock.patch("django.core.mail.EmailMultiAlternatives.send", side_effect=smtplib.SMTPAuthenticationError(535, b"bad")):
+                with self.assertRaises(mailer.EmailSendError) as cm:
+                    mailer.send_otp("x@example.com", "123456")
+                self.assertIn("App Password", cm.exception.hint)
+            with mock.patch("django.core.mail.EmailMultiAlternatives.send", side_effect=ConnectionRefusedError("blocked")):
+                with self.assertRaises(mailer.EmailSendError) as cm:
+                    mailer.send_otp("x@example.com", "123456")
+                self.assertIn("FREE", cm.exception.hint)                          # the Render free-plan SMTP block
+
+    def test_unconfigured_production_refuses_to_pretend(self):
+        with override_settings(EMAIL_PROVIDER="console", DEBUG=False, TESTING=False):
+            with self.assertRaises(mailer.EmailNotConfigured):
+                mailer.send_otp("x@example.com", "123456")
+        with override_settings(EMAIL_PROVIDER="smtp", EMAIL_HOST_PASSWORD="", TESTING=False):
+            with self.assertRaises(mailer.EmailNotConfigured):
+                mailer.send_otp("x@example.com", "123456")
+
+    def test_real_smtp_conversation_against_a_local_server(self):
+        """Speaks actual SMTP (EHLO / MAIL FROM / RCPT TO / DATA) to a tiny in-process server."""
+        import socket
+        import threading
+        received = {}
+        srv = socket.socket()
+        srv.bind(("127.0.0.1", 0))
+        srv.listen(1)
+        port = srv.getsockname()[1]
+
+        def serve():
+            conn, _ = srv.accept()
+            f = conn.makefile("rwb", buffering=0)
+            f.write(b"220 fake ESMTP\r\n")
+            data_mode, buf = False, []
+            while True:
+                line = f.readline()
+                if not line:
+                    break
+                if data_mode:
+                    if line == b".\r\n":
+                        received["data"] = b"".join(buf).decode("utf-8", "replace")
+                        f.write(b"250 queued\r\n")
+                        data_mode = False
+                    else:
+                        buf.append(line)
+                    continue
+                cmd = line.decode().strip().upper()
+                if cmd.startswith("EHLO") or cmd.startswith("HELO"):
+                    f.write(b"250 fake\r\n")
+                elif cmd.startswith("MAIL FROM"):
+                    received["from"] = line.decode().strip()
+                    f.write(b"250 ok\r\n")
+                elif cmd.startswith("RCPT TO"):
+                    received["to"] = line.decode().strip()
+                    f.write(b"250 ok\r\n")
+                elif cmd == "DATA":
+                    data_mode = True
+                    f.write(b"354 go\r\n")
+                elif cmd == "QUIT":
+                    f.write(b"221 bye\r\n")
+                    break
+                else:
+                    f.write(b"250 ok\r\n")
+            conn.close()
+
+        t = threading.Thread(target=serve, daemon=True)
+        t.start()
+        with override_settings(EMAIL_PROVIDER="smtp", EMAIL_BACKEND="django.core.mail.backends.smtp.EmailBackend",
+                               EMAIL_HOST="127.0.0.1", EMAIL_PORT=port, EMAIL_USE_TLS=False, EMAIL_USE_SSL=False,
+                               EMAIL_HOST_USER="", EMAIL_HOST_PASSWORD="",
+                               DEFAULT_FROM_EMAIL="Janani <pvsaketh1@gmail.com>"):
+            mailer.send_otp("login@example.com", "907153", "login")
+        t.join(5)
+        srv.close()
+        self.assertIn("pvsaketh1@gmail.com", received["from"])
+        self.assertIn("login@example.com", received["to"])
+        self.assertIn("907153", received["data"])
+        self.assertIn("text/html", received["data"])

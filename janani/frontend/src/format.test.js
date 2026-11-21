@@ -39,3 +39,28 @@ describe('formatters', () => {
     expect(emptyStages(IDX_STAGES).fetch).toEqual({ status: 'idle', ms: null, detail: '' })
   })
 })
+
+import { fmtClock as _clock, isEmail as _isEmail, maskEmail as _mask, passwordStrength as _strength } from './format'
+
+describe('sign-in helpers', () => {
+  it('validates emails', () => {
+    expect(_isEmail('me@example.com')).toBe(true)
+    expect(_isEmail(' me@example.com ')).toBe(true)
+    for (const bad of ['', 'me', 'me@', '@example.com', 'me@example', 'a b@example.com']) expect(_isEmail(bad)).toBe(false)
+  })
+  it('masks the local part of an email', () => {
+    expect(_mask('saketh@gmail.com')).toBe('s•••••@gmail.com')
+    expect(_mask('a@x.io')).toBe('a•@x.io')
+  })
+  it('scores passwords from weak to strong', () => {
+    expect(_strength('')).toBe(0)
+    expect(_strength('abc')).toBe(1)
+    expect(_strength('abcdefgh')).toBeGreaterThanOrEqual(1)
+    expect(_strength('Correct-Horse-9-Battery')).toBe(4)
+  })
+  it('formats the resend / expiry countdown', () => {
+    expect(_clock(0)).toBe('0:00')
+    expect(_clock(45)).toBe('0:45')
+    expect(_clock(600)).toBe('10:00')
+  })
+})
