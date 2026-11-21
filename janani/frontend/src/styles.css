@@ -611,3 +611,40 @@ details.pp pre { margin: 0; padding: 12px 14px; max-height: 320px; overflow: aut
 @keyframes nudge { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.14); } }
 @media (max-width: 560px) { .steps3 li span { display: none; } .steps3 li + li::before { width: 28px; margin: 0 8px; } }
 @media (prefers-reduced-motion: reduce) { .steps3 li + li::before, .steps3 li:first-child b { animation: none; } }
+
+/* ======================================================================
+   v9: crazy mode. Sparkle trail, click shockwaves, conic halo, constellation, spotlight everywhere
+   ====================================================================== */
+.spark { position: fixed; z-index: 95; width: var(--s); height: var(--s); margin: calc(var(--s) / -2) 0 0 calc(var(--s) / -2); pointer-events: none;
+  background: var(--c); clip-path: polygon(50% 0, 62% 38%, 100% 50%, 62% 62%, 50% 100%, 38% 62%, 0 50%, 38% 38%); filter: drop-shadow(0 0 6px var(--c));
+  animation: sparkout .9s cubic-bezier(.2,.7,.3,1) forwards; }
+@keyframes sparkout { 0% { transform: translate(0, 0) scale(1) rotate(0); opacity: 1; } 100% { transform: translate(var(--dx), var(--dy)) scale(.1) rotate(160deg); opacity: 0; } }
+.shock { position: fixed; z-index: 95; width: 12px; height: 12px; margin: -6px 0 0 -6px; border-radius: 50%; pointer-events: none; border: 2px solid var(--c2);
+  animation: shock .7s cubic-bezier(.15,.7,.3,1) forwards; }
+@keyframes shock { from { transform: scale(1); opacity: .9; } to { transform: scale(9); opacity: 0; border-width: .5px; } }
+
+/* spotlight glow for the newer surfaces (same recipe as .panel) */
+.demo, .login-card, .proofs li, .ai-body, .empty-live, .steps3 li { --mx: 50%; --my: 0%; }
+.proofs li, .steps3 li { position: relative; overflow: hidden; }
+.proofs li::before, .ai-body::before, .empty-live::before { content: ''; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; opacity: 0; transition: opacity .35s;
+  background: radial-gradient(260px circle at var(--mx) var(--my), rgba(192,76,240,.13), rgba(91,91,240,.06) 45%, transparent 72%); }
+.proofs li:hover::before, .ai-body:hover::before, .empty-live:hover::before { opacity: 1; }
+.proofs li { transition: transform .3s cubic-bezier(.2,.8,.2,1), box-shadow .3s; } .proofs li:hover { box-shadow: var(--sh-m); }
+
+/* sign-in: slow conic halo behind the card + drifting constellation behind everything */
+.login-side { position: relative; }
+.login-side::before { content: ''; position: absolute; z-index: -1; left: 50%; top: 46%; width: min(640px, 120%); aspect-ratio: 1; transform: translate(-50%, -50%); border-radius: 50%; pointer-events: none; opacity: .5; filter: blur(46px);
+  background: conic-gradient(from var(--ang), #5b5bf0, #c04cf0, #ff7a59, #ffd36e, #22c1a0, #5b5bf0); animation: ringspin 14s linear infinite; }
+.login-page::after { content: ''; position: fixed; inset: -10%; z-index: 0; pointer-events: none; opacity: .55;
+  background-image: radial-gradient(circle at 12% 22%, rgba(91,91,240,.35) 0 1.5px, transparent 2.5px), radial-gradient(circle at 78% 14%, rgba(192,76,240,.35) 0 1.5px, transparent 2.5px),
+    radial-gradient(circle at 40% 78%, rgba(255,122,89,.35) 0 1.5px, transparent 2.5px), radial-gradient(circle at 90% 70%, rgba(34,193,160,.35) 0 1.5px, transparent 2.5px), radial-gradient(circle at 60% 42%, rgba(91,91,240,.25) 0 1px, transparent 2px);
+  background-size: 220px 220px, 310px 310px, 270px 270px, 350px 350px, 180px 180px; animation: constel 60s linear infinite; }
+@keyframes constel { to { background-position: 220px 220px, -310px 310px, 270px -270px, -350px -350px, 180px 180px; } }
+.login-card { transition: box-shadow .4s; } .login-card:hover { box-shadow: 0 50px 100px -40px rgba(120,70,240,.45), var(--sh-m); }
+
+/* hero headline: slow liquid shimmer on the rotating word */
+.hero h1 .rot em { background: linear-gradient(100deg, var(--c1), var(--c2), var(--c3), var(--c2), var(--c1)); background-size: 250% 100%;
+  -webkit-background-clip: text; background-clip: text; color: transparent; animation: shimmer-text 5s ease-in-out infinite; padding-right: .06em; }
+.msg.user .bubble, .bubble { background: linear-gradient(135deg, #14152a, #0e0f1a 60%, #251a3d); }
+@media (prefers-reduced-motion: reduce) { .login-side::before, .login-page::after, .spark, .shock { animation: none; } .spark, .shock { display: none; } }
+@media (pointer: coarse) { .spark, .shock { display: none; } }

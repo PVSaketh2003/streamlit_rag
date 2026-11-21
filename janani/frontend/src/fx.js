@@ -1,8 +1,8 @@
 import { useEffect } from 'react'
 
-const SPOT = '.panel, .sug, .tile, .addvideo, .chunk, .how, .src, .bridge, .preview, .composer'
+const SPOT = '.panel, .sug, .tile, .addvideo, .chunk, .how, .src, .bridge, .preview, .composer, .demo, .login-card, .proofs li, .ai-body, .empty-live, .steps3 li'
 const TILT = '.sug, .src'
-const MAGNET = '.btn.primary, .send, .dock button'
+const MAGNET = '.btn.primary, .send, .dock button, .login-card .btn, .proofs li'
 
 /** Pointer effects via event delegation: card spotlight, 3D tilt, magnetic buttons, cursor halo. */
 export function useFx() {
@@ -55,7 +55,35 @@ export function useFx() {
         orb.style.setProperty('--ox', ox.toFixed(3)); orb.style.setProperty('--oy', oy.toFixed(3))
       }
     }
-    const move = (e) => { ev = e; if (!raf) raf = requestAnimationFrame(frame) }
+    // sparkle trail over the welcome / sign-in surfaces, and a shockwave ring on every press
+    const COLORS = ['#5b5bf0', '#c04cf0', '#ff7a59', '#ffd36e', '#22c1a0']
+    let lastSpark = 0, sparks = 0
+    const spark = (x, y) => {
+      if (sparks > 24) return
+      sparks++
+      const d = document.createElement('i')
+      d.className = 'spark'
+      const a = Math.random() * Math.PI * 2, r = 14 + Math.random() * 26
+      d.style.cssText = `left:${x}px;top:${y}px;--dx:${(Math.cos(a) * r).toFixed(1)}px;--dy:${(Math.sin(a) * r + 14).toFixed(1)}px;--c:${COLORS[(Math.random() * COLORS.length) | 0]};--s:${(6 + Math.random() * 8).toFixed(1)}px`
+      document.body.appendChild(d)
+      setTimeout(() => { d.remove(); sparks-- }, 900)
+    }
+    const shock = (e) => {
+      if (!(e.target instanceof Element) || !e.target.closest('.btn, .send, .sug, .dock button, .login-card button, .src, .chip')) return
+      const d = document.createElement('i')
+      d.className = 'shock'
+      d.style.cssText = `left:${e.clientX}px;top:${e.clientY}px`
+      document.body.appendChild(d)
+      setTimeout(() => d.remove(), 700)
+    }
+    const move = (e) => {
+      ev = e
+      const now = performance.now()
+      if (now - lastSpark > 55 && e.target instanceof Element && e.target.closest('.hero, .login-page, .onboard') && !e.target.closest('input, textarea, button, select')) {
+        lastSpark = now; spark(e.clientX, e.clientY)
+      }
+      if (!raf) raf = requestAnimationFrame(frame)
+    }
     const leave = () => {
       reset(lastMag); reset(lastTilt); lastMag = lastTilt = null
       document.querySelector('.cursor-ring')?.classList.remove('show')
@@ -63,12 +91,13 @@ export function useFx() {
     const down = () => document.querySelector('.cursor-ring')?.classList.add('down')
     const up = () => document.querySelector('.cursor-ring')?.classList.remove('down')
     window.addEventListener('pointerdown', down)
+    window.addEventListener('pointerdown', shock)
     window.addEventListener('pointerup', up)
     window.addEventListener('pointermove', move, { passive: true })
     document.addEventListener('pointerleave', leave)
     return () => {
       window.removeEventListener('pointermove', move); document.removeEventListener('pointerleave', leave)
-      window.removeEventListener('pointerdown', down); window.removeEventListener('pointerup', up); cancelAnimationFrame(raf)
+      window.removeEventListener('pointerdown', down); window.removeEventListener('pointerdown', shock); window.removeEventListener('pointerup', up); cancelAnimationFrame(raf)
     }
   }, [])
 }
