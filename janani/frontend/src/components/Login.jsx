@@ -78,11 +78,11 @@ export default function Login({ onDone }) {
     setBusy(true)
     try {
       const r = await api.post('/auth/start/', { email: email.trim(), password })
-      setCh({ id: r.challenge_id, masked: r.masked, purpose: r.purpose, resendAt: Date.now() + r.resend_in * 1000, expiresAt: Date.now() + r.expires_in * 1000 })
+      setCh({ token: r.challenge_token, masked: r.masked, purpose: r.purpose, resendAt: Date.now() + r.resend_in * 1000, expiresAt: Date.now() + r.expires_in * 1000 })
       setCode(Array(LEN).fill('')); setStep('code')
     } catch (err) {
-      if (err.code === 'cooldown' && err.extra.challenge_id) {      // a code was just sent: go straight to entering it
-        setCh({ id: err.extra.challenge_id, masked: maskEmail(email), purpose: 'login', resendAt: Date.now() + (err.extra.retry_after || 45) * 1000, expiresAt: Date.now() + 9 * 60 * 1000 })
+      if (err.code === 'cooldown' && err.extra.challenge_token) {      // a code was just sent: go straight to entering it
+        setCh({ token: err.extra.challenge_token, masked: maskEmail(email), purpose: 'login', resendAt: Date.now() + (err.extra.retry_after || 45) * 1000, expiresAt: Date.now() + 9 * 60 * 1000 })
         setCode(Array(LEN).fill('')); setStep('code')
       } else setError(err.message)
     } finally { if (mounted.current) setBusy(false) }
@@ -92,7 +92,7 @@ export default function Login({ onDone }) {
     if (busy || !ch) return
     setBusy(true); setError('')
     try {
-      await api.post('/auth/verify/', { challenge_id: ch.id, code: digits })
+      await api.post('/auth/verify/', { challenge_token: ch.token, code: digits })
       setStep('done')
       setTimeout(() => onDone?.(), 900)
     } catch (err) {
@@ -105,8 +105,8 @@ export default function Login({ onDone }) {
     if (busy || resendIn > 0 || !ch) return
     setBusy(true); setError('')
     try {
-      const r = await api.post('/auth/resend/', { challenge_id: ch.id })
-      setCh({ ...ch, dead: false, resendAt: Date.now() + r.resend_in * 1000, expiresAt: Date.now() + r.expires_in * 1000 })
+      const r = await api.post('/auth/resend/', { challenge_token: ch.token })
+      setCh({ ...ch, token: r.challenge_token, dead: false, resendAt: Date.now() + r.resend_in * 1000, expiresAt: Date.now() + r.expires_in * 1000 })
       setCode(Array(LEN).fill(''))
     } catch (err) {
       setError(err.message)

@@ -1,16 +1,24 @@
 """Email + password sign-in with an emailed one-time code (OTP).
 
-Flow
+JWT based flow
   1. POST /api/auth/start/   {email, password}
         known email   -> password checked, a login code is emailed
         unknown email -> a sign-up code is emailed; the account is created only after the code is verified
-  2. POST /api/auth/verify/  {challenge_id, code}  -> sets an HttpOnly session cookie
-  3. POST /api/auth/resend/  {challenge_id}
-  4. GET  /api/auth/me/, POST /api/auth/logout/
+     The response carries `challenge_token`: a signed JWT (HS256, 10 min, audience "janani:otp") whose claims are
+     {sub: email, jti: challenge id, pur: login|signup, otp: HMAC(code)}. It never contains the code, the password or
+     its hash; the HMAC is keyed with a server secret so the 6 digits cannot be brute-forced offline.
+  2. POST /api/auth/verify/  {challenge_token, code}
+     The signature, expiry, issuer and audience of the JWT are verified, then the code is checked against the `otp`
+     claim, and a server-side row enforces single use and the 5-guess limit. Success returns a *session JWT*
+     (audience "janani:session", 30 days) in an HttpOnly cookie (also accepted as `Authorization: Bearer`).
+  3. POST /api/auth/resend/  {challenge_token}  -> a new code and a new challenge_token (the old one stops working)
+  4. GET  /api/auth/me/, POST /api/auth/logout/  (logout revokes the session's `jti` server-side)
 
-Security properties: codes are 6 digits from `secrets`, stored only as an HMAC, valid 10 minutes, single use, max 5
-wrong guesses, resend cooldown, per-email send limits, failed-password throttling per email and per IP, session
-tokens stored only as SHA-256, HttpOnly + Secure + SameSite=Lax cookie, Origin check on state-changing requests.
+Security properties: codes are 6 digits from `secrets`, valid 10 minutes, single use, max 5 wrong guesses, resend
+cooldown, per-email send limits, failed-password throttling per email and per IP; JWTs are signed with a key derived
+from SECRET_KEY, `alg` is pinned (so `alg: none` and key-confusion attacks fail), `iss`/`aud`/`exp`/`iat`/`jti` are
+required, a challenge token can never be used as a session and vice versa; sessions are revocable; cookie is
+HttpOnly + Secure + SameSite=Lax; Origin check on state-changing requests.
 """
 import hashlib
 import hmac
@@ -19,6 +27,8 @@ import re
 import secrets
 import uuid
 from datetime import timedelta
+
+import jwt as pyjwt
 
 from django.conf import settings
 from django.contrib.auth.hashers import check_password, make_password
@@ -47,6 +57,11 @@ MAX_CHALLENGES_PER_HOUR = 6
 FAIL_LIMIT = 8                      # wrong passwords per email / per IP within FAIL_WINDOW_S
 FAIL_WINDOW_S = 15 * 60
 MIN_PASSWORD = 8
+
+JWT_ALG = "HS256"
+JWT_ISS = "janani"
+AUD_OTP = "janani:otp"
+AUD_SESSION = "janani:session"
 
 OPEN_PATHS = {"/api/health/", "/api/auth/start/", "/api/auth/verify/", "/api/auth/resend/", "/api/auth/me/",
               "/api/auth/logout/"}
@@ -102,8 +117,71 @@ def _hash_code(challenge_id, code):
     return hmac.new(settings.SECRET_KEY.encode(), f"{challenge_id}:{code}".encode(), hashlib.sha256).hexdigest()
 
 
-def _hash_token(token):
-    return hashlib.sha256(token.encode()).hexdigest()
+def _hash_token(value):
+    return hashlib.sha256(value.encode()).hexdigest()
+
+
+class JwtInvalid(Exception):
+    """Bad signature, wrong audience/issuer, malformed, missing claims, or an unsupported algorithm."""
+
+
+class JwtExpired(Exception):
+    pass
+
+
+def _jwt_key():
+    # a dedicated key derived from SECRET_KEY (>= 32 bytes) so the JWT key differs from the code-HMAC key
+    return hashlib.sha256(b"janani-jwt-v1:" + settings.SECRET_KEY.encode()).digest()
+
+
+def _jwt_encode(claims, audience, expires_at):
+    now = timezone.now()
+    payload = {**claims, "iss": JWT_ISS, "aud": audience, "iat": int(now.timestamp()), "exp": int(expires_at.timestamp())}
+    return pyjwt.encode(payload, _jwt_key(), algorithm=JWT_ALG)
+
+
+def _jwt_decode(token, audience, verify_exp=True):
+    """Verified claims, or raises JwtExpired / JwtInvalid. The algorithm is pinned to HS256."""
+    if not token or not isinstance(token, str) or token.count(".") != 2 or len(token) > 4096:
+        raise JwtInvalid("malformed")
+    try:
+        return pyjwt.decode(token, _jwt_key(), algorithms=[JWT_ALG], audience=audience, issuer=JWT_ISS,
+                            options={"require": ["exp", "iat", "jti", "sub", "iss", "aud"], "verify_exp": verify_exp})
+    except pyjwt.ExpiredSignatureError:
+        raise JwtExpired("expired") from None
+    except pyjwt.PyJWTError as exc:
+        raise JwtInvalid(type(exc).__name__) from None
+
+
+def challenge_token(ch):
+    """JWT for a pending one-time code. Built purely from the stored row, so it can be re-issued after a cooldown."""
+    return _jwt_encode({"sub": ch.email, "jti": str(ch.id), "pur": ch.purpose, "otp": ch.code_hash}, AUD_OTP, ch.expires_at)
+
+
+def create_session_token(account, user_agent=""):
+    """Creates the revocable server-side session row and returns the session JWT."""
+    jti = uuid.uuid4().hex
+    expires = timezone.now() + timedelta(days=SESSION_DAYS)
+    AuthSession.objects.create(account=account, token_hash=_hash_token(jti), user_agent=user_agent[:200], expires_at=expires)
+    return _jwt_encode({"sub": str(account.id), "email": account.email, "jti": jti}, AUD_SESSION, expires)
+
+
+def _bearer_or_cookie(request):
+    auth = request.META.get("HTTP_AUTHORIZATION", "")
+    if auth[:7].lower() == "bearer ":
+        return auth[7:].strip()
+    return request.COOKIES.get(SESSION_COOKIE)
+
+
+def session_from_token(token):
+    """AuthSession for a valid, unrevoked session JWT, else None."""
+    try:
+        claims = _jwt_decode(token, AUD_SESSION)
+    except (JwtInvalid, JwtExpired):
+        return None
+    return (AuthSession.objects.select_related("account")
+            .filter(token_hash=_hash_token(claims["jti"]), account_id=claims["sub"], expires_at__gt=timezone.now(),
+                    account__is_active=True).first())
 
 
 def _new_code():
@@ -168,14 +246,6 @@ def adopt_orphans(account):
                                    ignore_conflicts=True)
 
 
-def _create_session(request, account):
-    token = secrets.token_urlsafe(32)
-    AuthSession.objects.create(
-        account=account, token_hash=_hash_token(token), user_agent=request.META.get("HTTP_USER_AGENT", "")[:200],
-        expires_at=timezone.now() + timedelta(days=SESSION_DAYS))
-    return token
-
-
 def _set_cookie(response, token):
     response.set_cookie(SESSION_COOKIE, token, max_age=SESSION_DAYS * 86400, httponly=True,
                         secure=not settings.DEBUG and not settings.TESTING, samesite="Lax", path="/")
@@ -205,14 +275,11 @@ class AuthMiddleware:
             if origin and not self._same_site(request, origin):
                 return JsonResponse({"error": {"code": "bad_origin", "message": "Cross-site request blocked."}}, status=403)
 
-        token = request.COOKIES.get(SESSION_COOKIE)
-        if token:
-            sess = (AuthSession.objects.select_related("account")
-                    .filter(token_hash=_hash_token(token), expires_at__gt=timezone.now(), account__is_active=True).first())
-            if sess:
-                request.account = sess.account
-                if timezone.now() - sess.last_used > timedelta(hours=1):
-                    AuthSession.objects.filter(pk=sess.pk).update(last_used=timezone.now())
+        sess = session_from_token(_bearer_or_cookie(request))
+        if sess:
+            request.account = sess.account
+            if timezone.now() - sess.last_used > timedelta(hours=1):
+                AuthSession.objects.filter(pk=sess.pk).update(last_used=timezone.now())
 
         if request.account is None and path not in OPEN_PATHS:
             return JsonResponse({"error": {"code": "auth_required", "message": "Please sign in to continue."}}, status=401)
@@ -265,7 +332,7 @@ def auth_start(request):
     if latest and (now - latest.last_sent).total_seconds() < RESEND_COOLDOWN_S:
         wait = int(RESEND_COOLDOWN_S - (now - latest.last_sent).total_seconds()) + 1
         raise ApiError(f"A code was just sent. You can request another in {wait} seconds.", status=429, code="cooldown",
-                       extra={"retry_after": wait, "challenge_id": str(latest.id)})
+                       extra={"retry_after": wait, "challenge_token": challenge_token(latest)})
 
     code = _new_code()
     cid = uuid.uuid4()
@@ -278,7 +345,7 @@ def auth_start(request):
         ch.delete()
         raise
     LoginChallenge.objects.filter(email=email, consumed_at__isnull=True).exclude(pk=cid).update(consumed_at=now)
-    return Response({"challenge_id": str(cid), "email": email, "masked": mask_email(email), "purpose": purpose,
+    return Response({"challenge_token": challenge_token(ch), "email": email, "masked": mask_email(email), "purpose": purpose,
                      "expires_in": OTP_TTL_MIN * 60, "resend_in": RESEND_COOLDOWN_S})
 
 
@@ -289,15 +356,19 @@ def auth_verify(request):
     if len(code) != 6:
         raise ApiError("Enter the 6-digit code.", code="invalid_code")
     try:
-        cid = uuid.UUID(str(d.get("challenge_id")))
-    except ValueError:
+        claims = _jwt_decode(d.get("challenge_token"), AUD_OTP)
+        cid = uuid.UUID(str(claims["jti"]))
+    except JwtExpired:
+        raise ApiError("This code has expired. Request a new one.", code="code_expired") from None
+    except (JwtInvalid, ValueError):
         raise ApiError("This code is no longer valid. Request a new one.", code="challenge_invalid") from None
 
     now = timezone.now()
     outcome = None
     with transaction.atomic():
         ch = LoginChallenge.objects.select_for_update().filter(pk=cid).first()
-        if not ch or ch.consumed_at:
+        if not ch or ch.consumed_at or ch.email != claims["sub"] or not hmac.compare_digest(ch.code_hash, str(claims["otp"])):
+            # unknown, already used, or superseded by a newer code (resend) - the old JWT is dead
             outcome = ("challenge_invalid", "This code is no longer valid. Request a new one.", 400, {})
         elif ch.expires_at <= now:
             outcome = ("code_expired", "This code has expired. Request a new one.", 400, {})
@@ -305,7 +376,7 @@ def auth_verify(request):
             outcome = ("too_many_attempts", "Too many wrong codes. Request a new one.", 429, {})
         else:
             ch.attempts += 1
-            if hmac.compare_digest(_hash_code(ch.id, code), ch.code_hash):
+            if hmac.compare_digest(_hash_code(ch.id, code), str(claims["otp"])):
                 ch.consumed_at = now
                 ch.save(update_fields=["attempts", "consumed_at"])
             else:
@@ -330,8 +401,8 @@ def auth_verify(request):
         account.last_login = now
         account.save(update_fields=["last_login"])
     _clear_failures(ch.email, client_ip(request))
-    token = _create_session(request, account)
-    resp = Response({"account": _account_dict(account)})
+    token = create_session_token(account, request.META.get("HTTP_USER_AGENT", ""))
+    resp = Response({"account": _account_dict(account), "token_type": "Bearer", "expires_in": SESSION_DAYS * 86400})
     _set_cookie(resp, token)
     return resp
 
@@ -340,11 +411,12 @@ def auth_verify(request):
 def auth_resend(request):
     d = _body(request)
     try:
-        cid = uuid.UUID(str(d.get("challenge_id")))
-    except ValueError:
+        claims = _jwt_decode(d.get("challenge_token"), AUD_OTP, verify_exp=False)    # an expired code may still be re-sent
+        cid = uuid.UUID(str(claims["jti"]))
+    except (JwtInvalid, JwtExpired, ValueError):
         raise ApiError("This code is no longer valid. Start again.", code="challenge_invalid") from None
     now = timezone.now()
-    ch = LoginChallenge.objects.filter(pk=cid, consumed_at__isnull=True).first()
+    ch = LoginChallenge.objects.filter(pk=cid, email=claims["sub"], consumed_at__isnull=True).first()
     if not ch:
         raise ApiError("This sign-in has expired. Start again.", code="challenge_invalid")
     wait = RESEND_COOLDOWN_S - (now - ch.last_sent).total_seconds()
@@ -359,7 +431,7 @@ def auth_resend(request):
     ch.attempts, ch.sends, ch.last_sent = 0, ch.sends + 1, now
     ch.expires_at = now + timedelta(minutes=OTP_TTL_MIN)
     ch.save(update_fields=["code_hash", "attempts", "sends", "last_sent", "expires_at"])
-    return Response({"challenge_id": str(ch.id), "masked": mask_email(ch.email), "expires_in": OTP_TTL_MIN * 60,
+    return Response({"challenge_token": challenge_token(ch), "masked": mask_email(ch.email), "expires_in": OTP_TTL_MIN * 60,
                      "resend_in": RESEND_COOLDOWN_S})
 
 
@@ -372,9 +444,9 @@ def auth_me(request):
 
 @api_view(["POST"])
 def auth_logout(request):
-    token = request.COOKIES.get(SESSION_COOKIE)
-    if token:
-        AuthSession.objects.filter(token_hash=_hash_token(token)).delete()
+    sess = session_from_token(_bearer_or_cookie(request))
+    if sess:
+        sess.delete()                                  # revokes the JWT's jti: it is dead even though its signature is valid
     resp = Response(status=204)
     resp.delete_cookie(SESSION_COOKIE, path="/", samesite="Lax")
     return resp

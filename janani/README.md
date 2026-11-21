@@ -20,8 +20,14 @@ Every API call except `/api/health/` and the `/api/auth/*` endpoints needs a ses
 password; a 6-digit code is then emailed from **pvsaketh1@gmail.com** (`EMAIL_HOST_USER`) to confirm it is them.
 An unknown email is a sign-up: the account is created only after the code is verified.
 
-- Codes: 6 digits, valid 10 minutes, single use, stored only as an HMAC, 5 wrong guesses lock them, resend cooldown 45 s.
-- Sessions: random token in an `HttpOnly` + `Secure` + `SameSite=Lax` cookie (30 days); only its SHA-256 is stored.
+- **JWT based.** `POST /api/auth/start/` returns a `challenge_token`: a signed JWT (HS256, 10 min, audience `janani:otp`)
+  with claims `sub` (email), `jti` (challenge id), `pur` (login|signup) and `otp`, a *keyed HMAC* of the 6-digit code. It never
+  contains the code, the password or its hash. `POST /api/auth/verify/ {challenge_token, code}` checks the JWT (signature,
+  `exp`, `iss`, `aud`, pinned algorithm: `alg: none` and wrong keys are rejected) and the code, while a server-side row
+  enforces single use and the 5-guess limit. Success issues a **session JWT** (audience `janani:session`, 30 days) in an
+  `HttpOnly` + `Secure` + `SameSite=Lax` cookie (also accepted as `Authorization: Bearer <jwt>`). Sessions are revocable
+  (logout / deactivation kill the token's `jti` immediately). A resend issues a new token and invalidates the old one.
+- Codes: 6 digits, valid 10 minutes, single use, 5 wrong guesses lock them, resend cooldown 45 s.
 - Throttling: failed passwords per email and per IP, codes per email per hour; `Origin` check on state-changing requests.
 - Data is per account: chats, settings and the list of videos are private; a video index itself is shared and reused.
 - `ALLOWED_EMAILS` / `ALLOWED_EMAIL_DOMAINS` make the site invite-only (recommended on a public URL, otherwise anyone can

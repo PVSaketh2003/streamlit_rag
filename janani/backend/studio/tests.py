@@ -23,17 +23,11 @@ def make_account(email="owner@example.com", password=PASSWORD):
 
 
 def login_client(account=None):
-    """A test client that already carries a valid session cookie for `account`."""
-    import secrets
-    from datetime import timedelta
-    from django.utils import timezone
-    from .auth import SESSION_COOKIE, _hash_token
+    """A test client that already carries a valid session JWT cookie for `account`."""
+    from .auth import SESSION_COOKIE, create_session_token
     account = account or make_account()
-    token = secrets.token_urlsafe(32)
-    AuthSession.objects.create(account=account, token_hash=_hash_token(token),
-                               expires_at=timezone.now() + timedelta(days=1))
     c = Client()
-    c.cookies[SESSION_COOKIE] = token
+    c.cookies[SESSION_COOKIE] = create_session_token(account)
     c.account = account
     return c
 
@@ -665,6 +659,12 @@ from . import mailer
 from .auth import OTP_MAX_ATTEMPTS, RESEND_COOLDOWN_S, SESSION_COOKIE
 
 
+def _jti(token):
+    """The challenge id carried in a challenge JWT (read without verifying - tests only)."""
+    import jwt
+    return jwt.decode(token, options={"verify_signature": False})["jti"]
+
+
 def _code_from_outbox(index=-1):
     m = _re.search(r"\b(\d{6})\b", mail.outbox[index].subject)
     assert m, mail.outbox[index].subject
@@ -702,7 +702,7 @@ class AuthFlowTests(TestCase):
         self.assertIn("Janani", mail.outbox[0].from_email)
         self.assertFalse(Account.objects.filter(email="new.user@example.com").exists())   # not yet: email unverified
         code = _code_from_outbox()
-        ok = self.post("/api/auth/verify/", {"challenge_id": body["challenge_id"], "code": code})
+        ok = self.post("/api/auth/verify/", {"challenge_token": body["challenge_token"], "code": code})
         self.assertEqual(ok.status_code, 200, ok.content)
         self.assertEqual(ok.json()["account"]["email"], "new.user@example.com")
         cookie = ok.cookies[SESSION_COOKIE]
@@ -717,7 +717,7 @@ class AuthFlowTests(TestCase):
         make_account("me@example.com")
         r = self.start("me@example.com")
         self.assertEqual(r.json()["purpose"], "login")
-        ok = self.post("/api/auth/verify/", {"challenge_id": r.json()["challenge_id"], "code": _code_from_outbox()})
+        ok = self.post("/api/auth/verify/", {"challenge_token": r.json()["challenge_token"], "code": _code_from_outbox()})
         self.assertEqual(ok.status_code, 200)
         self.assertIsNotNone(Account.objects.get(email="me@example.com").last_login)
 
@@ -743,64 +743,66 @@ class AuthFlowTests(TestCase):
         self.assertEqual(len(mail.outbox), 0)
 
     def test_wrong_code_locks_after_max_attempts(self):
-        cid = self.start().json()["challenge_id"]
+        cid = self.start().json()["challenge_token"]
         good = _code_from_outbox()
         bad = "000000" if good != "000000" else "111111"
         left = []
         for _ in range(OTP_MAX_ATTEMPTS):
-            r = self.post("/api/auth/verify/", {"challenge_id": cid, "code": bad})
+            r = self.post("/api/auth/verify/", {"challenge_token": cid, "code": bad})
             self.assertEqual(r.status_code, 400)
             left.append(r.json()["error"]["attempts_left"])
         self.assertEqual(left, [4, 3, 2, 1, 0])
-        r = self.post("/api/auth/verify/", {"challenge_id": cid, "code": good})       # right code, too late
+        r = self.post("/api/auth/verify/", {"challenge_token": cid, "code": good})       # right code, too late
         self.assertEqual(r.status_code, 400)
         self.assertEqual(r.json()["error"]["code"], "challenge_invalid")
         self.assertFalse(Account.objects.filter(email="new@example.com").exists())
 
     def test_code_is_single_use_and_expires(self):
-        cid = self.start().json()["challenge_id"]
+        cid = self.start().json()["challenge_token"]
         code = _code_from_outbox()
-        self.assertEqual(self.post("/api/auth/verify/", {"challenge_id": cid, "code": code}).status_code, 200)
-        again = self.post("/api/auth/verify/", {"challenge_id": cid, "code": code}, Client())
+        self.assertEqual(self.post("/api/auth/verify/", {"challenge_token": cid, "code": code}).status_code, 200)
+        again = self.post("/api/auth/verify/", {"challenge_token": cid, "code": code}, Client())
         self.assertEqual(again.status_code, 400)
         self.assertEqual(again.json()["error"]["code"], "challenge_invalid")
         # expiry
         mail.outbox = []
         c2 = Client()
-        cid2 = self.start("late@example.com", client=c2).json()["challenge_id"]
-        LoginChallenge.objects.filter(pk=cid2).update(expires_at=_tz.now() - _td(seconds=1))
-        r = self.post("/api/auth/verify/", {"challenge_id": cid2, "code": _code_from_outbox()}, c2)
+        cid2 = self.start("late@example.com", client=c2).json()["challenge_token"]
+        LoginChallenge.objects.filter(pk=_jti(cid2)).update(expires_at=_tz.now() - _td(seconds=1))
+        r = self.post("/api/auth/verify/", {"challenge_token": cid2, "code": _code_from_outbox()}, c2)
         self.assertEqual(r.json()["error"]["code"], "code_expired")
 
     def test_code_is_stored_hashed_only(self):
-        cid = self.start().json()["challenge_id"]
+        cid = self.start().json()["challenge_token"]
         code = _code_from_outbox()
-        ch = LoginChallenge.objects.get(pk=cid)
+        ch = LoginChallenge.objects.get(pk=_jti(cid))
         self.assertNotIn(code, ch.code_hash)
         self.assertEqual(len(ch.code_hash), 64)
         self.assertNotIn(PASSWORD, ch.password_hash)
 
     def test_resend_cooldown_then_new_code_replaces_old(self):
-        cid = self.start().json()["challenge_id"]
+        cid = self.start().json()["challenge_token"]
         old = _code_from_outbox()
-        r = self.post("/api/auth/resend/", {"challenge_id": cid})
+        r = self.post("/api/auth/resend/", {"challenge_token": cid})
         self.assertEqual(r.status_code, 429)
         self.assertEqual(r.json()["error"]["code"], "cooldown")
-        LoginChallenge.objects.filter(pk=cid).update(last_sent=_tz.now() - _td(seconds=RESEND_COOLDOWN_S + 1))
-        self.assertEqual(self.post("/api/auth/resend/", {"challenge_id": cid}).status_code, 200)
+        LoginChallenge.objects.filter(pk=_jti(cid)).update(last_sent=_tz.now() - _td(seconds=RESEND_COOLDOWN_S + 1))
+        resent = self.post("/api/auth/resend/", {"challenge_token": cid})
+        self.assertEqual(resent.status_code, 200)
         self.assertEqual(len(mail.outbox), 2)
-        new = _code_from_outbox()
-        if new != old:
-            self.assertEqual(self.post("/api/auth/verify/", {"challenge_id": cid, "code": old}).status_code, 400)
-        self.assertEqual(self.post("/api/auth/verify/", {"challenge_id": cid, "code": new}).status_code, 200)
+        new, new_token = _code_from_outbox(), resent.json()["challenge_token"]
+        self.assertNotEqual(new_token, cid)
+        # the old JWT is superseded: dead even with its own (correct) old code
+        self.assertEqual(self.post("/api/auth/verify/", {"challenge_token": cid, "code": old}).status_code, 400)
+        self.assertEqual(self.post("/api/auth/verify/", {"challenge_token": new_token, "code": new}).status_code, 200)
 
     def test_requesting_a_new_start_invalidates_the_older_code(self):
         c = Client()
-        first = self.start(client=c).json()["challenge_id"]
-        LoginChallenge.objects.filter(pk=first).update(last_sent=_tz.now() - _td(seconds=RESEND_COOLDOWN_S + 1))
-        second = self.start(client=c).json()["challenge_id"]
+        first = self.start(client=c).json()["challenge_token"]
+        LoginChallenge.objects.filter(pk=_jti(first)).update(last_sent=_tz.now() - _td(seconds=RESEND_COOLDOWN_S + 1))
+        second = self.start(client=c).json()["challenge_token"]
         self.assertNotEqual(first, second)
-        r = self.post("/api/auth/verify/", {"challenge_id": first, "code": _code_from_outbox(0)}, c)
+        r = self.post("/api/auth/verify/", {"challenge_token": first, "code": _code_from_outbox(0)}, c)
         self.assertEqual(r.json()["error"]["code"], "challenge_invalid")
 
     def test_logout_ends_the_session(self):
@@ -842,16 +844,16 @@ class AuthFlowTests(TestCase):
         src = VideoSource.objects.create(key="v:en", video_id="aaaaaaaaaaa", lang_code="en", lang_name="English",
                                          lang_kind="manual", index_file="x")
         # a stranger who signs up FIRST gets nothing
-        cid0 = self.start("stranger@example.com", client=Client()).json()["challenge_id"]
+        cid0 = self.start("stranger@example.com", client=Client()).json()["challenge_token"]
         c0 = Client()
-        self.post("/api/auth/verify/", {"challenge_id": cid0, "code": _code_from_outbox()}, c0)
+        self.post("/api/auth/verify/", {"challenge_token": cid0, "code": _code_from_outbox()}, c0)
         self.assertEqual(c0.get("/api/conversations/").json()["results"], [])
         orphan.refresh_from_db()
         self.assertIsNone(orphan.account_id)
         mail.outbox = []
         with override_settings(OWNER_EMAIL="first@example.com"):
-            cid = self.start("first@example.com").json()["challenge_id"]
-            self.post("/api/auth/verify/", {"challenge_id": cid, "code": _code_from_outbox()})
+            cid = self.start("first@example.com").json()["challenge_token"]
+            self.post("/api/auth/verify/", {"challenge_token": cid, "code": _code_from_outbox()})
         acct = Account.objects.get(email="first@example.com")
         orphan.refresh_from_db()
         self.assertEqual(orphan.account_id, acct.id)
@@ -859,8 +861,8 @@ class AuthFlowTests(TestCase):
         # a second person does NOT get the first person's data
         mail.outbox = []
         c2 = Client()
-        cid2 = self.start("second@example.com", client=c2).json()["challenge_id"]
-        self.post("/api/auth/verify/", {"challenge_id": cid2, "code": _code_from_outbox()}, c2)
+        cid2 = self.start("second@example.com", client=c2).json()["challenge_token"]
+        self.post("/api/auth/verify/", {"challenge_token": cid2, "code": _code_from_outbox()}, c2)
         self.assertEqual(c2.get("/api/conversations/").json()["results"], [])
         self.assertEqual(c2.get("/api/sources/").json()["results"], [])
 
@@ -1209,3 +1211,164 @@ class GmailAuthorizeScriptTests(TestCase):
             self.assertTrue(p.read_text().endswith("OTHER=v\n"))
             self.assertEqual(oct(p.stat().st_mode)[-3:], "600")                        # secrets file is owner-only
             self.assertEqual(m.read_env(p)["GMAIL_CLIENT_ID"], "x")
+
+
+
+# ------------------------------------------------------------------ JWT: challenge tokens and session tokens
+
+class JwtTests(TestCase):
+    def setUp(self):
+        self.c = Client()
+        mail.outbox = []
+        from django.core.cache import cache
+        cache.clear()
+
+    def post(self, path, body, client=None, **extra):
+        return (client or self.c).post(path, json.dumps(body), content_type="application/json", **extra)
+
+    def begin(self, email="jwt@example.com", client=None):
+        r = self.post("/api/auth/start/", {"email": email, "password": PASSWORD}, client)
+        self.assertEqual(r.status_code, 200, r.content)
+        return r.json()
+
+    @staticmethod
+    def claims(token, verify=False):
+        import jwt
+        return jwt.decode(token, options={"verify_signature": verify, "verify_aud": False})
+
+    def test_challenge_token_is_a_signed_jwt_without_secrets(self):
+        body = self.begin()
+        token = body["challenge_token"]
+        self.assertEqual(token.count("."), 2)
+        header = json.loads(__import__("base64").urlsafe_b64decode(token.split(".")[0] + "=="))
+        self.assertEqual(header["alg"], "HS256")
+        c = self.claims(token)
+        self.assertEqual((c["iss"], c["aud"], c["sub"], c["pur"]), ("janani", "janani:otp", "jwt@example.com", "signup"))
+        self.assertEqual(c["jti"], _jti(token))
+        self.assertAlmostEqual(c["exp"] - c["iat"], 600, delta=2)
+        code = _code_from_outbox()
+        blob = json.dumps(c)
+        self.assertNotIn(code, blob)                                           # never the code itself
+        self.assertNotIn(PASSWORD, blob)
+        self.assertNotIn("pbkdf2", blob.lower())                               # never the password hash either
+        self.assertEqual(len(c["otp"]), 64)                                    # keyed HMAC of the code
+
+    def test_valid_token_and_code_issue_a_session_jwt(self):
+        body = self.begin()
+        r = self.post("/api/auth/verify/", {"challenge_token": body["challenge_token"], "code": _code_from_outbox()})
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(r.json()["token_type"], "Bearer")
+        session = r.cookies[SESSION_COOKIE].value
+        c = self.claims(session)
+        self.assertEqual((c["iss"], c["aud"], c["email"]), ("janani", "janani:session", "jwt@example.com"))
+        self.assertAlmostEqual(c["exp"] - c["iat"], 30 * 86400, delta=5)
+        self.assertEqual(self.c.get("/api/auth/me/").json()["account"]["email"], "jwt@example.com")
+
+    def test_tampered_challenge_token_is_rejected(self):
+        import base64
+        body = self.begin()
+        head, payload, sig = body["challenge_token"].split(".")
+        data = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+        data["sub"] = "attacker@example.com"
+        forged = base64.urlsafe_b64encode(json.dumps(data).encode()).rstrip(b"=").decode()
+        for bad in (f"{head}.{forged}.{sig}", f"{head}.{payload}.{sig[:-3]}abc", "not-a-jwt", "", "a.b.c"):
+            r = self.post("/api/auth/verify/", {"challenge_token": bad, "code": _code_from_outbox()}, Client())
+            self.assertEqual(r.status_code, 400, bad)
+            self.assertEqual(r.json()["error"]["code"], "challenge_invalid", bad)
+
+    def test_token_signed_with_another_key_or_alg_none_is_rejected(self):
+        import jwt
+        body = self.begin()
+        claims = self.claims(body["challenge_token"])
+        wrong_key = jwt.encode(claims, b"x" * 32, algorithm="HS256")
+        none_alg = jwt.encode(claims, None, algorithm="none")
+        for bad in (wrong_key, none_alg):
+            r = self.post("/api/auth/verify/", {"challenge_token": bad, "code": _code_from_outbox()}, Client())
+            self.assertEqual(r.json()["error"]["code"], "challenge_invalid")
+
+    def test_expired_challenge_token_reports_expiry(self):
+        from datetime import timedelta
+        from . import auth
+        body = self.begin()
+        expired = auth._jwt_encode({"sub": "jwt@example.com", "jti": _jti(body["challenge_token"]), "pur": "signup",
+                                    "otp": "0" * 64}, auth.AUD_OTP, _tz.now() - _td(seconds=5))
+        r = self.post("/api/auth/verify/", {"challenge_token": expired, "code": "123456"}, Client())
+        self.assertEqual(r.json()["error"]["code"], "code_expired")
+
+    def test_a_session_jwt_cannot_be_used_as_a_challenge_and_vice_versa(self):
+        from .auth import create_session_token
+        acct = make_account("cross@example.com")
+        session = create_session_token(acct)
+        r = self.post("/api/auth/verify/", {"challenge_token": session, "code": "123456"}, Client())
+        self.assertEqual(r.json()["error"]["code"], "challenge_invalid")
+        challenge = self.begin("other@example.com")["challenge_token"]
+        c = Client()
+        c.cookies[SESSION_COOKIE] = challenge
+        self.assertEqual(c.get("/api/config/").status_code, 401)
+
+    def test_code_from_one_challenge_does_not_work_with_another_token(self):
+        a = self.begin("a@example.com", Client())
+        code_a = _code_from_outbox()
+        mail.outbox = []
+        b = self.begin("b@example.com", Client())
+        r = self.post("/api/auth/verify/", {"challenge_token": b["challenge_token"], "code": code_a}, Client())
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(r.json()["error"]["code"], "wrong_code")
+
+    def test_resend_issues_a_new_token_and_kills_the_old_one(self):
+        body = self.begin()
+        old_token, old_code = body["challenge_token"], _code_from_outbox()
+        LoginChallenge.objects.filter(pk=_jti(old_token)).update(last_sent=_tz.now() - _td(seconds=RESEND_COOLDOWN_S + 1))
+        r = self.post("/api/auth/resend/", {"challenge_token": old_token})
+        self.assertEqual(r.status_code, 200, r.content)
+        new_token = r.json()["challenge_token"]
+        self.assertNotEqual(new_token, old_token)
+        self.assertEqual(_jti(new_token), _jti(old_token))                     # same challenge, new signed code
+        dead = self.post("/api/auth/verify/", {"challenge_token": old_token, "code": old_code}, Client())
+        self.assertEqual(dead.json()["error"]["code"], "challenge_invalid")    # even the right old code: superseded
+        ok = self.post("/api/auth/verify/", {"challenge_token": new_token, "code": _code_from_outbox()})
+        self.assertEqual(ok.status_code, 200)
+
+    def test_tampered_or_expired_session_cookie_is_anonymous(self):
+        from . import auth
+        c = login_client()
+        good = c.cookies[SESSION_COOKIE].value
+        self.assertEqual(c.get("/api/config/").status_code, 200)
+        for bad in (good[:-4] + "AAAA", good + "x", "garbage"):
+            c.cookies[SESSION_COOKIE] = bad
+            self.assertEqual(c.get("/api/config/").status_code, 401, bad)
+        claims = self.claims(good)
+        expired = auth._jwt_encode({"sub": claims["sub"], "email": claims["email"], "jti": claims["jti"]},
+                                   auth.AUD_SESSION, _tz.now() - _td(seconds=5))
+        c.cookies[SESSION_COOKIE] = expired
+        self.assertEqual(c.get("/api/config/").status_code, 401)
+
+    def test_bearer_header_works_without_a_cookie(self):
+        token = login_client().cookies[SESSION_COOKIE].value
+        r = Client().get("/api/config/", HTTP_AUTHORIZATION=f"Bearer {token}")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(Client().get("/api/config/", HTTP_AUTHORIZATION="Bearer nope").status_code, 401)
+
+    def test_logout_revokes_the_token_even_though_its_signature_is_still_valid(self):
+        c = login_client()
+        token = c.cookies[SESSION_COOKIE].value
+        self.assertEqual(c.post("/api/auth/logout/", "{}", content_type="application/json").status_code, 204)
+        replay = Client().get("/api/config/", HTTP_AUTHORIZATION=f"Bearer {token}")
+        self.assertEqual(replay.status_code, 401)                               # stolen-token replay after logout fails
+
+    def test_deactivated_account_loses_access_immediately(self):
+        c = login_client()
+        self.assertEqual(c.get("/api/config/").status_code, 200)
+        Account.objects.filter(pk=c.account.pk).update(is_active=False)
+        self.assertEqual(c.get("/api/config/").status_code, 401)
+
+    def test_session_for_a_different_account_id_in_the_claims_is_rejected(self):
+        """The `sub` claim must match the revocable session row's account, not just verify."""
+        from . import auth
+        a, b = make_account("a@example.com"), make_account("b@example.com")
+        token = auth.create_session_token(a)
+        claims = self.claims(token)
+        forged = auth._jwt_encode({"sub": str(b.id), "email": b.email, "jti": claims["jti"]}, auth.AUD_SESSION,
+                                  _tz.now() + _td(days=1))                      # signed correctly, but jti belongs to a
+        r = Client().get("/api/config/", HTTP_AUTHORIZATION=f"Bearer {forged}")
+        self.assertEqual(r.status_code, 401)
