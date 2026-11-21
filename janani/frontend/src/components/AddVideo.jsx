@@ -5,6 +5,7 @@ import { api, ApiError } from '../api'
 import { useApp } from '../store'
 import { emptyStages, extractVideoId, IDX_STAGES } from '../format'
 import Pipeline from './Pipeline'
+import Wave from './Wave'
 import { Chip, ErrorNote, Select } from './ui'
 
 export function langOptions(config, withAuto) {
@@ -153,6 +154,7 @@ export default function AddVideo({ title = 'Paste a YouTube link', subtitle, onD
       )}
       <LanguageBridge config={config} videoLang={settings.video_lang} answerLang={settings.answer_lang}
         onVideoLang={(v) => updateSettings({ video_lang: v })} onAnswerLang={(v) => updateSettings({ answer_lang: v })} />
+      {busy && stages?.fetch?.status === 'running' && /gemini|listen|transcrib/i.test(stages.fetch.detail || '') && <Wave label={stages.fetch.detail} />}
       {stages && (<><Pipeline stages={IDX_STAGES} state={stages} />{note && <p className="rib-note">{note}.</p>}</>)}
       {id && !busy && !paste && (
         <button type="button" className="linklike" onClick={() => setPaste({ reason: '' })}><ClipboardPaste size={14} />Or paste the transcript yourself</button>

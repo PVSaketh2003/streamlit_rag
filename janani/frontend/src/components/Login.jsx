@@ -8,32 +8,88 @@ import { Brand } from './TopBar'
 const LEN = 6
 const DEAD = ['challenge_invalid', 'code_expired', 'too_many_attempts']
 const LAST_EMAIL = 'janani-last-email'
-const GREETINGS = ['Hello', 'నమస్కారం', 'नमस्ते', 'வணக்கம்', 'こんにちは', 'Hola', 'مرحبا', 'Bonjour', '안녕하세요', 'Olá']
 const FEATURES = [
-  [MessageSquareQuote, 'Grounded in the video', 'Every answer is built only from what was actually said, with the exact passages shown.'],
-  [Languages, 'Any language in, any language out', 'Ask in one language and read the answer in another, across 20 languages.'],
-  [ShieldCheck, 'Private to you', 'Your chats, settings and videos live in your own account.'],
+  [MessageSquareQuote, 'Grounded in the video'],
+  [Languages, '20 languages'],
+  [ShieldCheck, 'Private to you'],
 ]
 
 const readLast = () => { try { return localStorage.getItem(LAST_EMAIL) || '' } catch { return '' } }
 const saveLast = (v) => { try { localStorage.setItem(LAST_EMAIL, v) } catch { /* private mode */ } }
 
-/** Left panel: brand story with softly floating greetings. Hidden on small screens. */
+const SCENES = [
+  { from: 'Telugu', to: 'English', q: 'బ్యాక్‌ప్రొపగేషన్ అంటే ఏమిటి?',
+    a: 'It is how a network learns: it measures its error, then nudges every weight backwards to shrink it.', chips: ['#3 · 76%', '#11 · 73%'] },
+  { from: 'Hindi', to: 'Spanish', q: 'ग्रेडिएंट डिसेंट क्या करता है?',
+    a: 'Mueve los pesos poco a poco en la dirección que más reduce el error.', chips: ['#4 · 74%', '#1 · 71%'] },
+  { from: 'Japanese', to: 'Hindi', q: 'コスト関数とは何ですか？',
+    a: 'यह बताता है कि नेटवर्क का अनुमान सही उत्तर से कितना दूर है।', chips: ['#2 · 78%', '#7 · 70%'] },
+  { from: 'English', to: 'French', q: 'What does the bias do?',
+    a: 'Le biais décide à partir de quel seuil le neurone s’active.', chips: ['#5 · 75%', '#9 · 72%'] },
+]
+const graphemes = (t) => (typeof Intl !== 'undefined' && Intl.Segmenter
+  ? Array.from(new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(t), (x) => x.segment) : Array.from(t))
+
+/** A looping mini-conversation: question types in one language, the answer streams in another. */
+function LiveDemo() {
+  const reduce = useRef(typeof matchMedia !== 'undefined' && matchMedia('(prefers-reduced-motion: reduce)').matches).current
+  const [i, setI] = useState(0)
+  const [phase, setPhase] = useState(reduce ? 'done' : 'q')      // q → think → a → done
+  const [n, setN] = useState(0)
+  const sc = SCENES[i]
+  const qg = graphemes(sc.q)
+  const words = sc.a.split(' ')
+  useEffect(() => {
+    if (reduce) return undefined
+    let t
+    if (phase === 'q') t = n < qg.length ? setTimeout(() => setN(n + 1), 48) : setTimeout(() => { setPhase('think'); setN(0) }, 380)
+    else if (phase === 'think') t = setTimeout(() => setPhase('a'), 1150)
+    else if (phase === 'a') t = n < words.length ? setTimeout(() => setN(n + 1), 105) : setTimeout(() => setPhase('done'), 300)
+    else t = setTimeout(() => { setI((x) => (x + 1) % SCENES.length); setPhase('q'); setN(0) }, 3400)
+    return () => clearTimeout(t)
+  }, [reduce, phase, n, qg.length, words.length])
+  const typedQ = phase === 'q' ? qg.slice(0, n).join('') : sc.q
+  const shownA = phase === 'a' ? words.slice(0, n) : phase === 'done' ? words : []
+  return (
+    <div className="demo" aria-hidden="true">
+      <div className="demo-bar">
+        <i /><i /><i />
+        <span>Janani · Backpropagation, intuitively</span>
+      </div>
+      <div className="demo-route" key={i}>
+        <span>{sc.from}</span><b><ArrowRight size={13} /></b><span className="to">{sc.to}</span>
+      </div>
+      <div className="demo-body">
+        {phase !== 'q' || n > 0 ? <div className="demo-q">{typedQ}{phase === 'q' && <u className="caret" />}</div> : <div className="demo-q ghost">…</div>}
+        <div className="demo-a">
+          <span className="demo-av"><Sparkles size={14} /></span>
+          <div>
+            {phase === 'think' && <div className="demo-think"><i /><i /><i /></div>}
+            {shownA.length > 0 && <p>{shownA.map((w, k) => <span key={k} className="w">{w} </span>)}</p>}
+            <div className="demo-chips">
+              {phase === 'done' && sc.chips.map((c, k) => <motion.span key={c} initial={{ opacity: 0, y: 6, scale: .9 }} animate={{ opacity: 1, y: 0, scale: 1 }} transition={{ delay: k * .12 }}>{c}</motion.span>)}
+            </div>
+          </div>
+        </div>
+      </div>
+      <div className="demo-dots">{SCENES.map((_, k) => <i key={k} className={k === i ? 'on' : ''} />)}</div>
+    </div>
+  )
+}
+
+/** Left panel: the story, a live demo, and three quiet proof points. Hidden on small screens. */
 function Showcase() {
   return (
-    <aside className="showcase" aria-hidden="true">
-      <div className="showcase-greets">
-        {GREETINGS.map((g, i) => <span key={g} style={{ '--i': i }} className={i % 3 === 0 ? 'g' : ''}>{g}</span>)}
-      </div>
+    <aside className="showcase">
       <motion.div initial={{ opacity: 0, y: 18 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: .6, delay: .1 }}>
         <span className="showcase-pill"><Sparkles size={14} />Janani studio</span>
         <h2>Ask any video.<br /><em>In any language.</em></h2>
         <p>Paste a YouTube link, then talk to it. Janani listens, finds the exact passages, and answers in the language you choose.</p>
-        <ul>
-          {FEATURES.map(([Icon, title, text], i) => (
-            <motion.li key={title} initial={{ opacity: 0, x: -14 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: .3 + i * .12 }}>
-              <span className="fi"><Icon size={18} /></span>
-              <span><b>{title}</b><small>{text}</small></span>
+        <LiveDemo />
+        <ul className="proofs">
+          {FEATURES.map(([Icon, title], i) => (
+            <motion.li key={title} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: .5 + i * .1 }}>
+              <span className="fi"><Icon size={15} /></span>{title}
             </motion.li>
           ))}
         </ul>
