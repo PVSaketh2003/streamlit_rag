@@ -590,3 +590,6 @@ details.pp pre { margin: 0; padding: 12px 14px; max-height: 320px; overflow: aut
 .scroll { overflow-x: hidden; }
 .tapes { width: calc(100% + 280px); max-width: none; justify-self: center; }
 @media (max-width: 720px) { .tapes { width: calc(100% + 60px); } }
+.showcase ul.proofs { display: flex; flex-wrap: wrap; gap: 10px; max-width: 500px; margin-top: 22px; }
+.showcase .proofs li { display: inline-flex; align-items: center; gap: 9px; padding: 7px 14px 7px 8px; border-radius: 999px; }
+.showcase .proofs .fi { width: 26px; height: 26px; border-radius: 50%; box-shadow: none; }

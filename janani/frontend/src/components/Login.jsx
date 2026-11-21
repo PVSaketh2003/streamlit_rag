@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { ArrowLeft, ArrowRight, Check, Eye, EyeOff, Languages, Loader2, Lock, Mail, MessageSquareQuote, ShieldCheck, Sparkles } from 'lucide-react'
 import { api } from '../api'
@@ -65,7 +65,7 @@ function LiveDemo() {
           <span className="demo-av"><Sparkles size={14} /></span>
           <div>
             {phase === 'think' && <div className="demo-think"><i /><i /><i /></div>}
-            {shownA.length > 0 && <p>{shownA.map((w, k) => <span key={k} className="w">{w} </span>)}</p>}
+            {shownA.length > 0 && <p>{shownA.map((w, k) => <Fragment key={k}><span className="w">{w}</span>{' '}</Fragment>)}</p>}
             <div className="demo-chips">
               {phase === 'done' && sc.chips.map((c, k) => <motion.span key={c} initial={{ opacity: 0, y: 6, scale: .9 }} animate={{ opacity: 1, y: 0, scale: 1 }} transition={{ delay: k * .12 }}>{c}</motion.span>)}
             </div>
