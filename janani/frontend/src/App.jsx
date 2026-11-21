@@ -3,6 +3,7 @@ import { Loader2, ServerCrash } from 'lucide-react'
 import { useApp } from './store'
 import { useFx } from './fx'
 import Stickers from './components/Stickers'
+import Credit from './components/Credit'
 import { Brand, Drawer, TopBar } from './components/TopBar'
 import Login from './components/Login'
 import Palette, { Burst } from './components/Palette'
@@ -38,6 +39,7 @@ export default function App() {
       <div className="dots" aria-hidden />
       <div className="grain" aria-hidden />
       <Stickers />
+      <Credit className="credit-app" />
       <div className="cursor-ring" aria-hidden />
       <TopBar />
       <Drawer />

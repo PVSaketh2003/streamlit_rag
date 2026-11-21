@@ -1,3 +1,4 @@
+import PvLogo from './PvLogo'
 import { useEffect, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { BarChart3, Check, Command, History, Library, LogOut, MessageSquare, Pencil, Plus, Trash2, X } from 'lucide-react'
@@ -6,8 +7,9 @@ import { displayName, timeAgo } from '../format'
 
 export const Brand = () => (
   <div className="brand">
-    <div className="brand-mark"><svg viewBox="0 0 64 64"><path d="M40 16v22a10 10 0 0 1-20 0" fill="none" stroke="#fff" strokeWidth="7" strokeLinecap="round" strokeLinejoin="round" /></svg></div>
+    <div className="brand-mark"><svg viewBox="0 0 64 64"><path d="M40 16v22a10 10 0 0 1-20 0" fill="none" stroke="#14121f" strokeWidth="7" strokeLinecap="round" strokeLinejoin="round" /></svg></div>
     <span className="brand-name">Janani<em>studio</em></span>
+    <span className="byline" title="Made by PV Sairam Saketh"><PvLogo size={20} />by PV</span>
   </div>
 )
 

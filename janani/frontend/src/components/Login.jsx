@@ -6,6 +6,7 @@ import { displayName, fmtClock, isEmail, maskEmail, passwordStrength } from '../
 import { Brand } from './TopBar'
 import Stickers from './Stickers'
 import Mascot from './Mascot'
+import Credit from './Credit'
 
 const LEN = 6
 const DEAD = ['challenge_invalid', 'code_expired', 'too_many_attempts']
@@ -304,6 +305,7 @@ export default function Login({ onDone }) {
             </AnimatePresence>
           </motion.div>
           <p className="login-foot">Your chats and videos are private to your account.</p>
+          <Credit className="credit-login" />
         </div>
       </div>
     </div>

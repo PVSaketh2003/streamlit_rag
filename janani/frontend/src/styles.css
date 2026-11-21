@@ -820,3 +820,22 @@ body { background-color: var(--bg); background-image: radial-gradient(rgba(20,18
 /* thinking avatar in the live answer, listening buddy while indexing */
 .m-avatar { flex: none; margin-top: -4px; animation-duration: 2.4s; }
 .listen .mascot { margin-bottom: -4px; }
+
+/* ======================================================================
+   v12: "by PV" mark + maker credit
+   ====================================================================== */
+.byline { display: inline-flex; align-items: center; gap: 6px; margin-left: 10px; padding: 3px 11px 3px 4px; border-radius: 999px; background: #fff; border: 2px solid var(--ink);
+  box-shadow: 2px 2px 0 var(--ink); font: 700 12px/1 var(--sans-d); letter-spacing: -.01em; color: var(--ink); white-space: nowrap; transform: rotate(-2deg); transition: transform .25s cubic-bezier(.2,.9,.3,1.4); }
+.brand:hover .byline { transform: rotate(2deg) scale(1.06); }
+.pvlogo { display: block; flex: none; }
+.login-card .brand { justify-content: center; }
+@media (max-width: 520px) { .byline { display: none; } }
+
+.credit { display: inline-flex; align-items: center; gap: 9px; padding: 5px 14px 5px 6px; border-radius: 999px; background: #fff; border: 2px solid var(--ink); box-shadow: var(--hard-s);
+  font-size: 12.5px; color: var(--ink); white-space: nowrap; }
+.credit b { font-family: var(--sans-d); font-weight: 800; letter-spacing: -.02em; background: linear-gradient(transparent 60%, var(--p-butter) 60%); padding: 0 2px; }
+.credit-login { margin: 8px auto 0; } .login-side { justify-items: center; }
+.credit-app { position: fixed; left: 18px; bottom: 14px; z-index: 5; transform: rotate(-1.5deg); }
+@media (max-width: 1380px) { .credit-app { display: none; } }
+.say-ready { font: 700 15px/1.25 var(--sans-d); letter-spacing: -.02em; }
+.hero-mascot .say:has(.say-ready) { min-width: 132px; background: var(--p-mint); } .hero-mascot .say:has(.say-ready)::after { background: var(--p-mint); }
