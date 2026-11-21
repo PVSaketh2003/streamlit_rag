@@ -64,6 +64,15 @@ cp backend/.env.example backend/.env   # add GROQ_API_KEY (or XAI_API_KEY) and G
 
 Tests: `cd backend && DJANGO_TESTING=1 python manage.py test studio` · `cd frontend && npm test`
 
+## Deploy to Vercel
+
+`vercel.json` + `api/index.py` run the same code on Vercel: the React build is served by Vercel's CDN and Django runs as a
+Python function behind `/api/*` (up to 300 s per request on Hobby). Set these environment variables in the Vercel project
+(Production): `DATABASE_URL` (any Postgres, e.g. Neon; use its pooled `-pooler` URL), `DJANGO_SECRET_KEY`, `GROQ_API_KEY`,
+`GEMINI_API_KEY`, `EMAIL_HOST_USER`, `EMAIL_HOST_PASSWORD` (Gmail App Password; Vercel's docs list no SMTP port restriction, unlike
+Render's free plan, but verify with a real test after deploying), optionally `ALLOWED_EMAILS`. Deploy from the `janani/` directory: `npx vercel deploy --prod`.
+Then add `janani.pvsairamsaketh.in` in the Vercel project's Domains and a CNAME `janani` -> `cname.vercel-dns.com` in GoDaddy.
+
 ## Deploy to Render (one-time setup)
 
 Everything is described in [`render.yaml`](../render.yaml) (a Render Blueprint): one web service `janani`

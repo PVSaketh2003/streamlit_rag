@@ -1,6 +1,7 @@
 """Django settings for Janani (RAG Studio). Everything is configurable via environment variables.
 
-Runs in three places with the same code:
+Runs in four places with the same code:
+  * on Vercel (a Python serverless function serves /api; the React build is served by Vercel's CDN)
   * locally (`./run.sh`, Postgres on localhost, keys in backend/.env)
   * in CI (GitHub Actions Postgres service)
   * on Render (gunicorn web service + Render PostgreSQL via DATABASE_URL); the same service
@@ -52,7 +53,7 @@ if not SECRET_KEY:
     raise RuntimeError("DJANGO_SECRET_KEY must be set in production (Render → service → Environment).")
 
 ALLOWED_HOSTS = env_list("DJANGO_ALLOWED_HOSTS",
-                         "localhost,127.0.0.1,[::1],testserver,janani.pvsairamsaketh.in,.onrender.com")
+                         "localhost,127.0.0.1,[::1],testserver,janani.pvsairamsaketh.in,.onrender.com,.vercel.app")
 if env("RENDER_EXTERNAL_HOSTNAME"):
     ALLOWED_HOSTS.append(env("RENDER_EXTERNAL_HOSTNAME"))
 
@@ -95,6 +96,8 @@ def _database():
             options["sslmode"] = q["sslmode"]
         elif u.hostname not in ("localhost", "127.0.0.1"):
             options["sslmode"] = "require"
+        if "-pooler" in (u.hostname or "") or env_bool("DB_POOLER", False):
+            options["prepare_threshold"] = None          # transaction-pooled connections: no prepared statements
         return {
             "ENGINE": "django.db.backends.postgresql",
             "NAME": unquote(u.path.lstrip("/")),
@@ -203,7 +206,7 @@ RAG = {
     "GEMINI_EMBED_MODEL": env("GEMINI_EMBED_MODEL", "gemini-embedding-001"),
     "EMBED_DIM": int(env("EMBED_DIM", "768")),
     # FAISS indexes live in Postgres; this directory is only a legacy local cache.
-    "FAISS_DIR": Path(env("FAISS_DIR", str(BASE_DIR / "data" / "faiss"))),
+    "FAISS_DIR": Path(env("FAISS_DIR", "/tmp/janani-faiss" if ON_VERCEL else str(BASE_DIR / "data" / "faiss"))),
     "DEFAULT_VIDEO": "Ilg3gGewQ5U",
     # When YouTube blocks caption downloads (common from cloud IPs such as Render's), route through a proxy.
     "YT_PROXY_URL": env("YT_PROXY_URL", ""),
