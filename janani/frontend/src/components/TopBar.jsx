@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { BarChart3, Check, Command, History, Library, LogOut, MessageSquare, Pencil, Plus, Trash2, X } from 'lucide-react'
 import { useApp } from '../store'
-import { timeAgo } from '../format'
+import { displayName, timeAgo } from '../format'
 
 export const Brand = () => (
   <div className="brand">
@@ -29,6 +29,7 @@ function AccountMenu() {
       <AnimatePresence>
         {open && (
           <motion.div className="acct-pop" initial={{ opacity: 0, y: -6, scale: .97 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: -6, scale: .97 }} transition={{ duration: .15 }}>
+            <strong className="acct-name">{displayName(account.email)}</strong>
             <small>Signed in as</small>
             <b title={account.email}>{account.email}</b>
             <button onClick={logout}><LogOut size={15} />Sign out</button>

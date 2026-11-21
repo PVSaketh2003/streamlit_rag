@@ -59,11 +59,16 @@ def _message(code, purpose, ttl_min):
                      f'border-radius:12px;background:#f3f2fb;font:600 26px/52px Menlo,Consolas,monospace;'
                      f'color:#0e0f1a;text-align:center">{escape(ch)}</span>' for ch in code)
     html = f"""<!doctype html><html><body style="margin:0;background:#fafaf7;padding:32px 16px;font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif">
-<div style="max-width:460px;margin:0 auto;background:#ffffff;border:1px solid #ececf3;border-radius:22px;padding:32px;text-align:center">
+<div style="max-width:460px;margin:0 auto;background:#ffffff;border:1px solid #ececf3;border-radius:24px;overflow:hidden;text-align:center">
+<div style="height:6px;background:linear-gradient(90deg,#5b5bf0,#c04cf0,#ff7a59)"></div>
+<div style="padding:32px">
+<div style="display:inline-block;width:44px;height:44px;line-height:44px;border-radius:14px;background:#0e0f1a;color:#ffffff;font:700 22px/44px Georgia,serif;margin-bottom:12px">J</div>
 <div style="font:700 20px/1 -apple-system,Segoe UI,Arial;letter-spacing:-.02em;color:#0e0f1a">Janani<span style="font-style:italic;font-weight:400;font-family:Georgia,serif"> studio</span></div>
 <p style="color:#6a6e84;font-size:15px;margin:22px 0 18px">Your verification code to {escape(action)}</p>
 <div style="margin:0 0 20px">{digits}</div>
 <p style="color:#6a6e84;font-size:13px;margin:0">This code expires in {ttl_min} minutes.<br>If you did not request it, you can safely ignore this email.</p>
+</div>
+<div style="padding:14px 32px;background:#f7f7fb;color:#9a9fba;font-size:12px">Talk to any video, in any language &middot; Janani</div>
 </div></body></html>"""
     return subject, text, html
 

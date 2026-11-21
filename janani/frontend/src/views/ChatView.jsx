@@ -7,7 +7,7 @@ import Pipeline from '../components/Pipeline'
 import Galaxy from '../components/Galaxy'
 import { Avatar, MessageView } from '../components/Message'
 import { Chip, Select } from '../components/ui'
-import { QRY_STAGES, splitReasoning } from '../format'
+import { displayName, QRY_STAGES, splitReasoning } from '../format'
 
 const TICKER = ['Hello', 'నమస్కారం', 'नमस्ते', 'வணக்கம்', 'こんにちは', 'Hola', 'مرحبا', '你好', 'Bonjour', 'Guten Tag', '안녕하세요', 'Olá', 'Привет', 'ನಮಸ್ಕಾರ', 'നമസ്കാരം', 'নমস্কার', 'સત શ્રી અકાલ', 'سلام']
 const WORDS = ['lecture', 'podcast', 'keynote', 'tutorial', 'interview']
@@ -19,7 +19,7 @@ function Letters({ text, delay = 0 }) {
   ))
 }
 
-function Hero() {
+function Hero({ name }) {
   const [i, setI] = useState(0)
   useEffect(() => { const t = setInterval(() => setI((x) => (x + 1) % WORDS.length), 2400); return () => clearInterval(t) }, [])
   // Letters lean away from the cursor (springy, settles back when the pointer leaves).
@@ -50,7 +50,7 @@ function Hero() {
   }, [])
   return (
     <div className="hero">
-      <motion.span className="pill" initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }}><b />ask in any language · answer in the one you choose</motion.span>
+      <motion.span className="pill" initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }}><b />{name ? `Hi ${name}` : 'Hello'} · ask in any language, answer in the one you choose</motion.span>
       <Galaxy words={TICKER} />
       <h1><Letters text="Talk to any" /> <span className="rot"><AnimatePresence mode="wait"><motion.em key={i} initial={{ y: 30, opacity: 0, filter: 'blur(8px)' }} animate={{ y: 0, opacity: 1, filter: 'blur(0px)' }} exit={{ y: -30, opacity: 0, filter: 'blur(8px)' }} transition={{ duration: .45 }}>{WORDS[i]}</motion.em></AnimatePresence></span></h1>
       <motion.p initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: .7 }}>Paste a YouTube link. The video and the answer can be in different languages.</motion.p>
@@ -130,7 +130,7 @@ function Composer({ disabled, reason }) {
 }
 
 export default function ChatView() {
-  const { conv, source, live, ask, config, settings, updateSettings, setView } = useApp()
+  const { conv, source, live, ask, config, settings, updateSettings, setView, account } = useApp()
   const scroller = useRef(null)
   const stick = useRef(true)
   const [showJump, setShowJump] = useState(false)
@@ -169,7 +169,7 @@ export default function ChatView() {
         <div className="col">
           {empty && (
             <>
-              <Hero />
+              <Hero name={account ? displayName(account.email) : ""} />
               {source ? (
                 <div className="starter">
                   <LanguageBridge config={config} locked videoLang={source.lang_code} answerLang={settings.answer_lang}

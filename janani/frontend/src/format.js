@@ -64,3 +64,9 @@ export function passwordStrength(pw) {
 }
 
 export const fmtClock = (secs) => `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`
+
+/** A friendly first name from an email address: "saketh.pv@x.com" -> "Saketh", "pvsaketh1@x.com" -> "Pvsaketh". */
+export function displayName(email) {
+  const local = ((email || '').split('@')[0] || '').split(/[._+-]/)[0].replace(/[^A-Za-z\u00C0-\u024F\u0900-\u0DFF]/g, '')
+  return local ? local[0].toUpperCase() + local.slice(1).toLowerCase() : 'there'
+}

@@ -441,3 +441,45 @@ details.pp pre { margin: 0; padding: 12px 14px; max-height: 320px; overflow: aut
 @media (max-width: 860px) { .login-card { padding: 28px 22px 22px; border-radius: 26px; } .login-card h1 { font-size: 34px; } .otp { gap: 6px; } .otp input { font-size: 22px; } }
 
 .login-warn { margin: 2px 0 14px; padding: 10px 14px; border-radius: 12px; background: #fff9ed; border: 1px solid rgba(183,121,31,.3); color: #8a5a12; font-size: 13px; line-height: 1.5; }
+
+/* ======================================================================
+   Sign-in v2: two-panel layout, step dots, countdown ring, confetti
+   ====================================================================== */
+.login-page { padding: 24px 20px; }
+.login-shell { position: relative; z-index: 1; width: min(1080px, 100%); display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(0, 480px); gap: clamp(28px, 5vw, 72px); align-items: center; }
+.login-side { display: grid; justify-items: center; gap: 16px; }
+.login-card { width: 100%; max-width: 460px; }
+.showcase { position: relative; min-height: 520px; display: grid; align-content: center; padding: 8px 0; }
+.showcase-greets { position: absolute; inset: -20px -10px; pointer-events: none; overflow: hidden; }
+.showcase-greets span { position: absolute; font-family: var(--serif); font-size: 22px; color: rgba(14,15,26,.16); white-space: nowrap; animation: floaty 9s ease-in-out infinite; animation-delay: calc(var(--i) * -.9s); }
+.showcase-greets span.g { color: rgba(192,76,240,.3); font-style: italic; }
+.showcase-greets span:nth-child(1) { left: 4%; top: 6%; } .showcase-greets span:nth-child(2) { left: 62%; top: 3%; } .showcase-greets span:nth-child(3) { left: 82%; top: 20%; }
+.showcase-greets span:nth-child(4) { left: 0%; top: 30%; } .showcase-greets span:nth-child(5) { left: 70%; top: 40%; } .showcase-greets span:nth-child(6) { left: 18%; top: 72%; }
+.showcase-greets span:nth-child(7) { left: 88%; top: 66%; } .showcase-greets span:nth-child(8) { left: 40%; top: 90%; } .showcase-greets span:nth-child(9) { left: 2%; top: 88%; } .showcase-greets span:nth-child(10) { left: 58%; top: 80%; }
+@keyframes floaty { 0%, 100% { transform: translateY(0) rotate(-1.5deg); } 50% { transform: translateY(-14px) rotate(1.5deg); } }
+.showcase > div:not(.showcase-greets) { position: relative; z-index: 1; }
+.showcase-pill { display: inline-flex; align-items: center; gap: 8px; padding: 6px 14px; border-radius: 999px; background: rgba(255,255,255,.8); border: 1px solid var(--line); font-size: 12.5px; color: var(--muted); box-shadow: var(--sh-s); }
+.showcase-pill svg { color: var(--c2); }
+.showcase h2 { margin: 18px 0 14px; font-family: var(--serif); font-weight: 400; font-size: clamp(44px, 5.4vw, 66px); line-height: 1.02; letter-spacing: -.035em; }
+.showcase h2 em { background: var(--grad); -webkit-background-clip: text; background-clip: text; color: transparent; padding-right: .06em; }
+.showcase > div > p { color: var(--muted); font-size: 17px; max-width: 470px; margin: 0 0 26px; line-height: 1.6; }
+.showcase ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 14px; max-width: 470px; }
+.showcase li { display: flex; gap: 14px; align-items: flex-start; padding: 14px 16px; border-radius: 18px; background: rgba(255,255,255,.72); border: 1px solid var(--line); box-shadow: var(--sh-s); backdrop-filter: blur(12px); }
+.showcase .fi { flex: none; width: 38px; height: 38px; border-radius: 12px; display: grid; place-items: center; color: #fff; background: var(--grad); box-shadow: 0 10px 20px -8px rgba(192,76,240,.7); }
+.showcase li b { display: block; font-size: 14.5px; font-weight: 600; } .showcase li small { display: block; color: var(--muted); font-size: 13px; line-height: 1.5; margin-top: 2px; }
+.steps { display: flex; justify-content: center; gap: 6px; margin: -6px 0 18px; } .steps i { width: 26px; height: 4px; border-radius: 4px; background: var(--tint2); transition: .4s; }
+.steps i.on { background: var(--ink); width: 40px; } .steps i.done { background: var(--ok); }
+.login-caps { margin: -6px 4px 10px; font-size: 12.5px; color: var(--warn); }
+.expiry { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); } .expiry b { color: var(--ink); font-family: 'JetBrains Mono', monospace; font-weight: 500; }
+.ring { width: 22px; height: 22px; transform: rotate(-90deg); } .ring-bg { fill: none; stroke: var(--tint2); stroke-width: 3.5; }
+.ring-fg { fill: none; stroke: var(--c1); stroke-width: 3.5; stroke-linecap: round; transition: stroke-dashoffset 1s linear, stroke .3s; } .ring-fg.low { stroke: var(--err); }
+.login-done { position: relative; }
+.confetti { position: absolute; left: 50%; top: 56px; width: 0; height: 0; pointer-events: none; }
+.confetti i { position: absolute; width: 8px; height: 8px; border-radius: 2px; background: var(--c); transform: rotate(var(--a)) translateY(0); animation: burst 1.1s cubic-bezier(.15,.7,.3,1) forwards; opacity: 0; }
+@keyframes burst { 0% { opacity: 1; transform: rotate(var(--a)) translateY(0) scale(1); } 100% { opacity: 0; transform: rotate(var(--a)) translateY(calc(var(--d) * -1)) scale(.4); } }
+.acct-name { font-family: var(--serif); font-weight: 400; font-size: 22px; letter-spacing: -.01em; margin-bottom: 4px; }
+@media (max-width: 980px) { .login-shell { grid-template-columns: minmax(0, 1fr); justify-items: center; } .showcase { display: none; } .login-side { width: 100%; } }
+
+/* decorative greetings: quieter, and kept off the readable text */
+.showcase-greets span { color: rgba(14,15,26,.085); } .showcase-greets span.g { color: rgba(192,76,240,.2); }
+.showcase-greets span:nth-child(4), .showcase-greets span:nth-child(5), .showcase-greets span:nth-child(6) { display: none; }

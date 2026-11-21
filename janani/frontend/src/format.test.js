@@ -64,3 +64,18 @@ describe('sign-in helpers', () => {
     expect(_clock(600)).toBe('10:00')
   })
 })
+
+import { displayName as _name } from './format'
+
+describe('displayName', () => {
+  it('derives a friendly first name from an email', () => {
+    expect(_name('saketh.pv@example.com')).toBe('Saketh')
+    expect(_name('PVSAKETH1@gmail.com')).toBe('Pvsaketh')
+    expect(_name('ana_maria@x.io')).toBe('Ana')
+  })
+  it('falls back gracefully', () => {
+    expect(_name('')).toBe('there')
+    expect(_name('1234@x.io')).toBe('there')
+    expect(_name(undefined)).toBe('there')
+  })
+})
