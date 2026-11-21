@@ -4,6 +4,7 @@ import { ArrowLeft, ArrowRight, Check, Eye, EyeOff, Languages, Loader2, Lock, Ma
 import { api } from '../api'
 import { displayName, fmtClock, isEmail, maskEmail, passwordStrength } from '../format'
 import { Brand } from './TopBar'
+import Stickers from './Stickers'
 
 const LEN = 6
 const DEAD = ['challenge_invalid', 'code_expired', 'too_many_attempts']
@@ -226,6 +227,7 @@ export default function Login({ onDone }) {
     <div className="login-page">
       <div className="aurora" aria-hidden><i /><i /><i /></div>
       <div className="grain" aria-hidden />
+      <Stickers />
       <div className="login-shell">
         <Showcase />
         <div className="login-side">

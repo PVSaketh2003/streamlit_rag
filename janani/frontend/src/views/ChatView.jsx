@@ -13,7 +13,7 @@ const WORDS = ['lecture', 'podcast', 'keynote', 'tutorial', 'interview']
 
 function Letters({ text, delay = 0 }) {
   return text.split('').map((ch, k) => (
-    <motion.span key={k} className={ch === ' ' ? 'ltr sp' : 'ltr'} initial={{ y: '0.9em', opacity: 0, filter: 'blur(8px)' }} animate={{ y: 0, opacity: 1, filter: 'blur(0px)' }}
+    <motion.span key={k} className={ch === ' ' ? 'ltr sp' : 'ltr'} initial={{ y: '0.9em', opacity: 0 }} animate={{ y: 0, opacity: 1 }}
       transition={{ delay: delay + k * .035, duration: .6, ease: [.2, .8, .2, 1] }}><span className="rp">{ch === ' ' ? '\u00A0' : ch}</span></motion.span>
   ))
 }
@@ -50,7 +50,7 @@ function Hero({ name, tapes = true, compact = false }) {
   return (
     <div className={`hero ${compact ? 'compact' : ''}`}>
       <motion.span className="pill" initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }}><b />{name ? `Hi ${name}` : 'Hello'} · ask in any language, answer in the one you choose</motion.span>
-      <h1><Letters text="Talk to any" /> <span className="rot"><AnimatePresence mode="wait"><motion.em key={i} initial={{ y: 30, opacity: 0, filter: 'blur(8px)' }} animate={{ y: 0, opacity: 1, filter: 'blur(0px)' }} exit={{ y: -30, opacity: 0, filter: 'blur(8px)' }} transition={{ duration: .45 }}>{WORDS[i]}</motion.em></AnimatePresence></span></h1>
+      <h1><Letters text="Talk to any" /> <span className="rot"><AnimatePresence mode="wait"><motion.em key={i} initial={{ y: 30, opacity: 0 }} animate={{ y: 0, opacity: 1 }} exit={{ y: -30, opacity: 0 }} transition={{ duration: .45 }}>{WORDS[i]}</motion.em></AnimatePresence></span></h1>
       <motion.p initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: .7 }}>Paste a YouTube link. The video and the answer can be in different languages.</motion.p>
       {tapes && <Tapes words={TICKER} />}
     </div>

@@ -2,6 +2,7 @@ import { AnimatePresence, motion } from 'framer-motion'
 import { Loader2, ServerCrash } from 'lucide-react'
 import { useApp } from './store'
 import { useFx } from './fx'
+import Stickers from './components/Stickers'
 import { Brand, Drawer, TopBar } from './components/TopBar'
 import Login from './components/Login'
 import Palette, { Burst } from './components/Palette'
@@ -36,6 +37,7 @@ export default function App() {
       <div className="halo" aria-hidden />
       <div className="dots" aria-hidden />
       <div className="grain" aria-hidden />
+      <Stickers />
       <div className="cursor-ring" aria-hidden />
       <TopBar />
       <Drawer />
