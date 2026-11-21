@@ -50,7 +50,7 @@ export default function SourcesView() {
   return (
     <div className="page"><div className="page-col">
       <h2 className="view-title"><Scramble text="Sources" /></h2>
-      <p className="view-sub">One FAISS index per video and caption language, stored in Postgres + on disk and reused every time. Each conversation uses exactly one source.</p>
+      <p className="view-sub">Every video you add becomes searchable memory. Index it once, then come back and talk to it any time, in any language.</p>
       <AddVideo title="Add a video" />
       <div className="grid-gap">
         {sources.length === 0 && <Empty icon={<Library size={22} />} title="Nothing indexed yet">Paste a link above to build your first knowledge base.</Empty>}

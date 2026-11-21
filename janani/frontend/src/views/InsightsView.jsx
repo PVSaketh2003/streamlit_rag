@@ -5,6 +5,7 @@ import { api } from '../api'
 import { useApp } from '../store'
 import { Chip, Empty, Panel, Scramble, Skeleton, Toggle } from '../components/ui'
 import { fmtNum, fmtS } from '../format'
+import Wave from '../components/Wave'
 
 const COLORS = ['#8b5cf6', '#22d3ee', '#818cf8', '#34d399', '#fbbf24', '#94a3b8', '#f472b6']
 
@@ -60,7 +61,9 @@ function Performance() {
   }, [conv?.id, conv?.messages.length])
   if (!d) return <div className="stackv"><Skeleton h={90} r={14} /><Skeleton h={140} r={14} /></div>
   if (d.error) return <Empty title="Could not load measurements">Is the backend running?</Empty>
-  if (!d.last && !sources.length) return <Empty title="No measurements yet">Index a video and ask a question — real timings show up here.</Empty>
+  if (!d.last && !sources.length) return (
+    <div className="empty-live"><Wave bars={44} /><b>Nothing measured yet</b><p>Index a video and ask a question. Real timings for every stage show up here.</p></div>
+  )
   const l = d.last, tr = d.latest_trace
   const maxTps = Math.max(1, ...d.history.map((h) => h.tps || 0))
   return (

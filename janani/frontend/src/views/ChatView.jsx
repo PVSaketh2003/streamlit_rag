@@ -4,7 +4,6 @@ import { ArrowDown, ArrowUp, Eraser, Square, Video } from 'lucide-react'
 import { useApp } from '../store'
 import AddVideo, { LanguageBridge, langOptions } from '../components/AddVideo'
 import Pipeline from '../components/Pipeline'
-import Galaxy from '../components/Galaxy'
 import { Avatar, MessageView } from '../components/Message'
 import { Chip, Select } from '../components/ui'
 import { displayName, QRY_STAGES, splitReasoning } from '../format'
@@ -51,9 +50,21 @@ function Hero({ name }) {
   return (
     <div className="hero">
       <motion.span className="pill" initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }}><b />{name ? `Hi ${name}` : 'Hello'} · ask in any language, answer in the one you choose</motion.span>
-      <Galaxy words={TICKER} />
       <h1><Letters text="Talk to any" /> <span className="rot"><AnimatePresence mode="wait"><motion.em key={i} initial={{ y: 30, opacity: 0, filter: 'blur(8px)' }} animate={{ y: 0, opacity: 1, filter: 'blur(0px)' }} exit={{ y: -30, opacity: 0, filter: 'blur(8px)' }} transition={{ duration: .45 }}>{WORDS[i]}</motion.em></AnimatePresence></span></h1>
       <motion.p initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: .7 }}>Paste a YouTube link. The video and the answer can be in different languages.</motion.p>
+      <Tapes words={TICKER} />
+    </div>
+  )
+}
+
+/** Two crossing ribbons of greetings that scroll in opposite directions. Decorative only. */
+function Tapes({ words }) {
+  const row = (list) => [...list, ...list].map((w, k) => <span key={k}>{w}<i>✦</i></span>)
+  const rev = [...words].reverse()
+  return (
+    <div className="tapes" aria-hidden="true">
+      <div className="tape t1"><div className="tape-track">{row(words)}</div></div>
+      <div className="tape t2"><div className="tape-track rev">{row(rev)}</div></div>
     </div>
   )
 }
