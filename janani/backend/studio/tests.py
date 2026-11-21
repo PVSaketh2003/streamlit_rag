@@ -233,6 +233,15 @@ class ApiTests(TestCase):
         self.assertEqual(r.status_code, 200)
         return sse_events(r)
 
+    def test_new_conversation_after_removing_its_video(self):
+        self.index_pasted()
+        sid = self.c.get("/api/sources/").json()["results"][0]["id"]
+        self.assertIn(self.c.delete(f"/api/sources/{sid}/").status_code, (200, 204))
+        self.assertEqual(self.post("/api/conversations/", {"source_id": sid}).status_code, 404)   # still strict
+        r = self.post("/api/conversations/", {})          # the blank conversation must not keep the removed video
+        self.assertIn(r.status_code, (200, 201))
+        self.assertIsNone(r.json()["source_id"])
+
     def test_health_and_config(self):
         self.assertEqual(self.c.get("/api/health/").json()["database"], True)
         cfg = self.c.get("/api/config/").json()

@@ -11,6 +11,8 @@ export function AppProvider({ children }) {
   const [settings, setSettings] = useState(null)
   const [runtime, setRuntime] = useState(null)
   const [sources, setSources] = useState([])
+  const sourcesRef = useRef([])
+  sourcesRef.current = sources
   const [convs, setConvs] = useState([])
   const [conv, setConv] = useState(null)
   const [view, setView] = useState('chat')
@@ -83,7 +85,9 @@ export function AppProvider({ children }) {
 
   const newChat = useCallback(async (sourceId) => {
     const cur = convRef.current
-    const sid = sourceId ?? cur?.source_id ?? null
+    const carried = cur?.source_id
+    const stillMine = carried != null && sourcesRef.current.some((x) => x.id === carried)
+    const sid = sourceId ?? (stillMine ? carried : null)
     const c = await api.post('/conversations/', sid != null ? { source_id: sid } : {})
     setConv(c); setView('chat'); setNavOpen(false)
     refreshConvs()

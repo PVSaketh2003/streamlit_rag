@@ -334,16 +334,18 @@ def conversations(request):
         QueryMetric.objects.filter(account=request.account).delete()
         return Response(status=204)
     d = _body(request)
+    mine = _my_sources(request.account)
     source = None
     if d.get("source_id") is not None:
         source = _get_or_404(VideoSource, pk=d["source_id"], user_links__account=request.account)
     # reuse a pristine empty conversation instead of piling up blanks
     blank = Conversation.objects.filter(account=request.account, messages__isnull=True).first()
     if blank:
-        blank.source = source or blank.source
+        keep = blank.source if blank.source_id and mine.filter(pk=blank.source_id).exists() else None
+        blank.source = source or keep or mine.first()
         blank.save()
         return Response(conversation_dict(blank, with_messages=True), status=200)
-    c = Conversation.objects.create(account=request.account, source=source or _my_sources(request.account).first())
+    c = Conversation.objects.create(account=request.account, source=source or mine.first())
     return Response(conversation_dict(c, with_messages=True), status=201)
 
 

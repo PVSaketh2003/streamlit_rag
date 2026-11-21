@@ -18,7 +18,7 @@ function Letters({ text, delay = 0 }) {
   ))
 }
 
-function Hero({ name }) {
+function Hero({ name, tapes = true, compact = false }) {
   const [i, setI] = useState(0)
   useEffect(() => { const t = setInterval(() => setI((x) => (x + 1) % WORDS.length), 2400); return () => clearInterval(t) }, [])
   // Letters lean away from the cursor (springy, settles back when the pointer leaves).
@@ -48,11 +48,11 @@ function Hero({ name }) {
     return () => { cancelAnimationFrame(raf); window.removeEventListener('pointermove', move); document.removeEventListener('pointerleave', out) }
   }, [])
   return (
-    <div className="hero">
+    <div className={`hero ${compact ? 'compact' : ''}`}>
       <motion.span className="pill" initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }}><b />{name ? `Hi ${name}` : 'Hello'} · ask in any language, answer in the one you choose</motion.span>
       <h1><Letters text="Talk to any" /> <span className="rot"><AnimatePresence mode="wait"><motion.em key={i} initial={{ y: 30, opacity: 0, filter: 'blur(8px)' }} animate={{ y: 0, opacity: 1, filter: 'blur(0px)' }} exit={{ y: -30, opacity: 0, filter: 'blur(8px)' }} transition={{ duration: .45 }}>{WORDS[i]}</motion.em></AnimatePresence></span></h1>
       <motion.p initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: .7 }}>Paste a YouTube link. The video and the answer can be in different languages.</motion.p>
-      <Tapes words={TICKER} />
+      {tapes && <Tapes words={TICKER} />}
     </div>
   )
 }
@@ -180,7 +180,7 @@ export default function ChatView() {
         <div className="col">
           {empty && (
             <>
-              <Hero name={account ? displayName(account.email) : ""} />
+              <Hero name={account ? displayName(account.email) : ""} tapes={!!source} compact={!source} />
               {source ? (
                 <div className="starter">
                   <LanguageBridge config={config} locked videoLang={source.lang_code} answerLang={settings.answer_lang}
@@ -190,7 +190,17 @@ export default function ChatView() {
                     <button key={s} className="sug" onClick={() => ask(s)}><span>{s}</span><ArrowUp size={14} /></button>))}</div>
                   <p className="rib-note">Want another video or language? Open the Sources tab.</p>
                 </div>
-              ) : <AddVideo />}
+              ) : (
+                <div className="onboard">
+                  <ol className="steps3" aria-label="How it works">
+                    <li><b>1</b><span>Paste a link</span></li>
+                    <li><b>2</b><span>Janani listens</span></li>
+                    <li><b>3</b><span>Ask anything</span></li>
+                  </ol>
+                  <AddVideo title="Start with a video" />
+                  <Tapes words={TICKER} />
+                </div>
+              )}
             </>
           )}
           {msgs.map((m, i) => (
@@ -202,7 +212,7 @@ export default function ChatView() {
         </div>
         {showJump && msgs.length > 0 && <button className="jump" onClick={() => scroller.current.scrollTo({ top: 1e9, behavior: 'smooth' })} aria-label="Scroll to latest"><ArrowDown size={16} /></button>}
       </div>
-      <Composer disabled={!source} reason="Add a video first to start chatting" />
+      {source ? <Composer disabled={false} /> : !empty && <Composer disabled reason="This conversation has no video. Pick or add one in Sources." />}
     </div>
   )
 }
