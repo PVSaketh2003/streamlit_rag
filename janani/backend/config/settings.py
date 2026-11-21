@@ -164,7 +164,13 @@ EMAIL_TIMEOUT = int(env("EMAIL_TIMEOUT", "15"))
 DEFAULT_FROM_EMAIL_ADDRESS = env("DEFAULT_FROM_EMAIL_ADDRESS", EMAIL_HOST_USER)
 DEFAULT_FROM_EMAIL = env("DEFAULT_FROM_EMAIL", f"Janani <{DEFAULT_FROM_EMAIL_ADDRESS}>")
 BREVO_API_KEY = env("BREVO_API_KEY", "")
-EMAIL_PROVIDER = (env("EMAIL_PROVIDER") or ("brevo" if BREVO_API_KEY else "smtp" if EMAIL_HOST_PASSWORD else "console")).lower()
+# Gmail API over HTTPS (OAuth): sends from the real Gmail account and works on Render Free (port 443 is not blocked).
+GMAIL_CLIENT_ID = env("GMAIL_CLIENT_ID", "")
+GMAIL_CLIENT_SECRET = env("GMAIL_CLIENT_SECRET", "")
+GMAIL_REFRESH_TOKEN = env("GMAIL_REFRESH_TOKEN", "")
+_GMAIL_API_READY = bool(GMAIL_CLIENT_ID and GMAIL_CLIENT_SECRET and GMAIL_REFRESH_TOKEN)
+EMAIL_PROVIDER = (env("EMAIL_PROVIDER") or ("gmail_api" if _GMAIL_API_READY else "brevo" if BREVO_API_KEY
+                                            else "smtp" if EMAIL_HOST_PASSWORD else "console")).lower()
 EMAIL_BACKEND = ("django.core.mail.backends.console.EmailBackend" if EMAIL_PROVIDER == "console"
                  else "django.core.mail.backends.smtp.EmailBackend")
 

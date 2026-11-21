@@ -27,12 +27,27 @@ An unknown email is a sign-up: the account is created only after the code is ver
 - `ALLOWED_EMAILS` / `ALLOWED_EMAIL_DOMAINS` make the site invite-only (recommended on a public URL, otherwise anyone can
   sign up and use your Groq/Gemini quota). `OWNER_EMAIL` (default `EMAIL_HOST_USER`) inherits pre-existing data.
 
-**Email delivery (pick one):**
-1. **Gmail SMTP** - set `EMAIL_HOST_PASSWORD` to a Google *App Password* for `pvsaketh1@gmail.com`
-   (Google Account > Security > 2-Step Verification > App passwords). **Render's free web services block outbound SMTP
-   (ports 25/465/587), so this needs a paid Render instance** ([docs](https://render.com/docs/free)).
-2. **Brevo HTTPS API** - works on the free plan: create a free Brevo account, verify the sender address, set `BREVO_API_KEY`.
+**Email delivery (pick one; the first one configured is used):**
+1. **Gmail API over HTTPS (recommended; free, sends from the real Gmail account, works on Render Free).** See below.
+2. **Brevo HTTPS API** - free account, verify the sender address, set `BREVO_API_KEY`.
+3. **Gmail SMTP** - `EMAIL_HOST_PASSWORD` = a Google *App Password*. Render's free web services block outbound SMTP
+   (ports 25/465/587), so this needs a paid Render instance ([docs](https://render.com/docs/free)).
+   Providers that offer SMTP on port 2525 (SMTP2GO, Mailjet) also work on Render Free: set `EMAIL_HOST`, `EMAIL_PORT=2525`,
+   `EMAIL_HOST_USER`, `EMAIL_HOST_PASSWORD`.
 `/api/health/` reports the provider (never secrets) so a broken setup is easy to spot.
+
+### Gmail API setup (one time, about 10 minutes)
+1. Go to <https://console.cloud.google.com/> and create a project (e.g. `janani`).
+2. **APIs & Services > Library** > search **Gmail API** > **Enable**.
+3. **APIs & Services > OAuth consent screen**: User type **External**, app name `Janani`, your Gmail as support/developer
+   email. Under **Scopes** add `https://www.googleapis.com/auth/gmail.send`. Under **Audience** click **Publish app**
+   (important: apps left in *Testing* get refresh tokens that expire after 7 days; an unverified published app is fine for
+   your own account).
+4. **APIs & Services > Credentials > Create credentials > OAuth client ID**, type **Desktop app**. Copy the client ID and secret.
+5. Put these two lines in `janani/backend/.env`: `GMAIL_CLIENT_ID=...` and `GMAIL_CLIENT_SECRET=...`
+6. Run `python3 janani/scripts/gmail_authorize.py`. Your browser opens, you approve *send email* for `pvsaketh1@gmail.com`
+   (Google shows an "unverified app" warning: Advanced > Go to Janani). The script saves `GMAIL_REFRESH_TOKEN` into `.env`.
+7. Add the same three variables (`GMAIL_CLIENT_ID`, `GMAIL_CLIENT_SECRET`, `GMAIL_REFRESH_TOKEN`) to the Render service.
 
 ## Local development
 

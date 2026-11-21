@@ -1,15 +1,20 @@
 """Sends the one-time login code.
 
-Providers (chosen automatically, override with EMAIL_PROVIDER=smtp|brevo|console):
+Providers (chosen automatically, override with EMAIL_PROVIDER=gmail_api|smtp|brevo|console):
+  * gmail_api – Gmail API over HTTPS with OAuth (GMAIL_CLIENT_ID / GMAIL_CLIENT_SECRET / GMAIL_REFRESH_TOKEN). Sends from
+              the real Gmail account, so deliverability is best, and it works on Render Free (port 443 is not blocked).
   * smtp    – Gmail (or any SMTP server). Needs EMAIL_HOST_PASSWORD (a Google *App Password*).
               NOTE: Render's FREE web services block outbound ports 25/465/587, so SMTP needs a paid Render instance.
   * brevo   – HTTPS API (api.brevo.com), works from any host incl. Render Free. Needs BREVO_API_KEY and the sender
               address verified in Brevo.
   * console – prints the code to the server log. Only allowed when DEBUG is on (local development) or in tests.
 """
+import base64
 import json
 import logging
 import smtplib
+import time
+import urllib.parse
 import socket
 import urllib.error
 import urllib.request
@@ -40,7 +45,7 @@ def provider():
 def status():
     """Non-secret summary for /api/health/ so a broken mail setup is diagnosable."""
     p = provider()
-    return {"provider": p, "configured": p in ("smtp", "brevo") or (p == "console" and (settings.DEBUG or settings.TESTING)),
+    return {"provider": p, "configured": p in ("smtp", "brevo", "gmail_api") or (p == "console" and (settings.DEBUG or settings.TESTING)),
             "from": settings.DEFAULT_FROM_EMAIL}
 
 
@@ -61,6 +66,63 @@ def _message(code, purpose, ttl_min):
 <p style="color:#6a6e84;font-size:13px;margin:0">This code expires in {ttl_min} minutes.<br>If you did not request it, you can safely ignore this email.</p>
 </div></body></html>"""
     return subject, text, html
+
+
+_gmail_token = {"value": "", "expires": 0.0}
+
+
+def _gmail_access_token():
+    """Short-lived access token from the long-lived refresh token (cached until shortly before it expires)."""
+    if _gmail_token["value"] and time.time() < _gmail_token["expires"] - 60:
+        return _gmail_token["value"]
+    data = urllib.parse.urlencode({
+        "client_id": settings.GMAIL_CLIENT_ID, "client_secret": settings.GMAIL_CLIENT_SECRET,
+        "refresh_token": settings.GMAIL_REFRESH_TOKEN, "grant_type": "refresh_token"}).encode()
+    req = urllib.request.Request("https://oauth2.googleapis.com/token", data=data, method="POST",
+                                 headers={"content-type": "application/x-www-form-urlencoded"})
+    try:
+        with urllib.request.urlopen(req, timeout=settings.EMAIL_TIMEOUT) as resp:
+            tok = json.loads(resp.read())
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", "replace")[:300]
+        hint = ("Google refused the refresh token. If the OAuth app is in 'Testing' mode its tokens expire after 7 days: "
+                "publish the app (OAuth consent screen > Publish app) and run scripts/gmail_authorize.py again."
+                if "invalid_grant" in body else "Check GMAIL_CLIENT_ID / GMAIL_CLIENT_SECRET / GMAIL_REFRESH_TOKEN.")
+        raise EmailSendError(f"Google token endpoint HTTP {exc.code}: {body}", hint) from None
+    except (urllib.error.URLError, socket.timeout, OSError) as exc:
+        raise EmailSendError(f"Could not reach Google: {exc}", "Check the server's internet access.") from None
+    _gmail_token["value"] = tok["access_token"]
+    _gmail_token["expires"] = time.time() + int(tok.get("expires_in", 3600))
+    return _gmail_token["value"]
+
+
+def _send_gmail_api(to_email, subject, text, html):
+    from email.message import EmailMessage
+    from email.utils import formatdate, make_msgid
+    msg = EmailMessage()
+    msg["From"], msg["To"], msg["Subject"] = settings.DEFAULT_FROM_EMAIL, to_email, subject
+    msg["Date"], msg["Message-ID"] = formatdate(localtime=False), make_msgid(domain="janani.local")
+    msg.set_content(text)
+    msg.add_alternative(html, subtype="html")
+    raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
+    req = urllib.request.Request(
+        "https://gmail.googleapis.com/gmail/v1/users/me/messages/send", data=json.dumps({"raw": raw}).encode(), method="POST",
+        headers={"authorization": f"Bearer {_gmail_access_token()}", "content-type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=settings.EMAIL_TIMEOUT) as resp:
+            if resp.status >= 300:
+                raise EmailSendError(f"Gmail API HTTP {resp.status}")
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", "replace")[:300]
+        if exc.code == 401:
+            _gmail_token["value"] = ""                                   # force a fresh token next time
+        hint = {403: "The Gmail API is not enabled, or the token lacks the gmail.send scope: enable 'Gmail API' in Google "
+                     "Cloud and re-run scripts/gmail_authorize.py.",
+                401: "The access token was rejected; it will be refreshed on the next attempt.",
+                429: "Gmail's sending limit was reached; try again later."}.get(exc.code, "Gmail API rejected the request.")
+        raise EmailSendError(f"Gmail API HTTP {exc.code}: {body}", hint) from None
+    except (urllib.error.URLError, socket.timeout, OSError) as exc:
+        raise EmailSendError(f"Could not reach Gmail API: {exc}", "Check the server's internet access.") from None
 
 
 def _send_brevo(to_email, subject, text, html):
@@ -85,6 +147,10 @@ def _send_brevo(to_email, subject, text, html):
 def send_otp(to_email, code, purpose="login", ttl_min=10):
     p = provider()
     subject, text, html = _message(code, purpose, ttl_min)
+    if p == "gmail_api":
+        if not (settings.GMAIL_CLIENT_ID and settings.GMAIL_CLIENT_SECRET and settings.GMAIL_REFRESH_TOKEN):
+            raise EmailNotConfigured("GMAIL_CLIENT_ID / GMAIL_CLIENT_SECRET / GMAIL_REFRESH_TOKEN are not all set")
+        return _send_gmail_api(to_email, subject, text, html)
     if p == "brevo":
         if not settings.BREVO_API_KEY:
             raise EmailNotConfigured("BREVO_API_KEY is not set")

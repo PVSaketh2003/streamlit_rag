@@ -1090,3 +1090,122 @@ class MailerTests(TestCase):
         self.assertIn("login@example.com", received["to"])
         self.assertIn("907153", received["data"])
         self.assertIn("text/html", received["data"])
+
+
+# ------------------------------------------------------------------ Gmail API (OAuth over HTTPS) provider
+
+class GmailApiTests(TestCase):
+    GMAIL = dict(EMAIL_PROVIDER="gmail_api", GMAIL_CLIENT_ID="cid", GMAIL_CLIENT_SECRET="csecret",
+                 GMAIL_REFRESH_TOKEN="rtoken", DEFAULT_FROM_EMAIL="Janani <pvsaketh1@gmail.com>")
+
+    def setUp(self):
+        mailer._gmail_token.update(value="", expires=0.0)
+        self.addCleanup(mailer._gmail_token.update, value="", expires=0.0)
+
+    class _Resp:
+        def __init__(self, body=b"{}", status=200):
+            self._b, self.status = body, status
+
+        def read(self):
+            return self._b
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def _fake(self, calls, fail_send=None):
+        def fake_urlopen(req, timeout=None):
+            calls.append((req.full_url, dict(req.header_items()), req.data))
+            if "oauth2.googleapis.com" in req.full_url:
+                return self._Resp(json.dumps({"access_token": "ya29.token", "expires_in": 3600}).encode())
+            if fail_send:
+                raise fail_send
+            return self._Resp(b'{"id":"abc"}')
+        return fake_urlopen
+
+    def test_sends_a_real_rfc822_message_through_the_gmail_api(self):
+        import base64
+        from email import message_from_bytes
+        calls = []
+        with override_settings(**self.GMAIL), mock.patch("urllib.request.urlopen", self._fake(calls)):
+            mailer.send_otp("login@example.com", "314159", "login")
+        token_call, send_call = calls
+        self.assertIn("grant_type=refresh_token", token_call[2].decode())
+        self.assertIn("refresh_token=rtoken", token_call[2].decode())
+        self.assertEqual(send_call[0], "https://gmail.googleapis.com/gmail/v1/users/me/messages/send")
+        self.assertEqual(send_call[1]["Authorization"], "Bearer ya29.token")
+        raw = json.loads(send_call[2])["raw"]
+        msg = message_from_bytes(base64.urlsafe_b64decode(raw))
+        self.assertEqual(msg["To"], "login@example.com")
+        self.assertIn("pvsaketh1@gmail.com", msg["From"])
+        self.assertIn("314159", msg["Subject"])
+        types = [p.get_content_type() for p in msg.walk()]
+        self.assertIn("text/plain", types)
+        self.assertIn("text/html", types)
+
+    def test_access_token_is_cached_between_sends(self):
+        calls = []
+        with override_settings(**self.GMAIL), mock.patch("urllib.request.urlopen", self._fake(calls)):
+            mailer.send_otp("a@example.com", "111111")
+            mailer.send_otp("b@example.com", "222222")
+        self.assertEqual(sum("oauth2.googleapis.com" in c[0] for c in calls), 1)       # one token request
+        self.assertEqual(sum("messages/send" in c[0] for c in calls), 2)
+
+    def test_expired_refresh_token_gives_a_publish_the_app_hint(self):
+        import io
+        import urllib.error
+
+        def boom(req, timeout=None):
+            raise urllib.error.HTTPError(req.full_url, 400, "bad", {}, io.BytesIO(b'{"error":"invalid_grant"}'))
+        with override_settings(**self.GMAIL), mock.patch("urllib.request.urlopen", boom):
+            with self.assertRaises(mailer.EmailSendError) as cm:
+                mailer.send_otp("a@example.com", "111111")
+        self.assertIn("7 days", cm.exception.hint)
+
+    def test_api_disabled_or_missing_scope_hint(self):
+        import io
+        import urllib.error
+        err = urllib.error.HTTPError("u", 403, "forbidden", {}, io.BytesIO(b'{"error":{"message":"insufficient"}}'))
+        with override_settings(**self.GMAIL), mock.patch("urllib.request.urlopen", self._fake([], fail_send=err)):
+            with self.assertRaises(mailer.EmailSendError) as cm:
+                mailer.send_otp("a@example.com", "111111")
+        self.assertIn("gmail.send", cm.exception.hint)
+
+    def test_missing_credentials_is_not_configured(self):
+        with override_settings(EMAIL_PROVIDER="gmail_api", GMAIL_CLIENT_ID="", GMAIL_CLIENT_SECRET="", GMAIL_REFRESH_TOKEN=""):
+            with self.assertRaises(mailer.EmailNotConfigured):
+                mailer.send_otp("a@example.com", "111111")
+
+    def test_status_reports_provider_without_secrets(self):
+        with override_settings(**self.GMAIL):
+            st = mailer.status()
+        self.assertEqual(st["provider"], "gmail_api")
+        self.assertTrue(st["configured"])
+        self.assertNotIn("rtoken", json.dumps(st))
+
+
+class GmailAuthorizeScriptTests(TestCase):
+    def _mod(self):
+        import importlib.util
+        from pathlib import Path
+        p = Path(__file__).resolve().parents[2] / "scripts" / "gmail_authorize.py"
+        spec = importlib.util.spec_from_file_location("gmail_authorize", p)
+        m = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(m)
+        return m
+
+    def test_env_writer_replaces_or_appends_without_touching_other_lines(self):
+        import tempfile
+        from pathlib import Path
+        m = self._mod()
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d, ".env")
+            p.write_text('A=1\n# comment\nGMAIL_CLIENT_ID="x"\nGMAIL_REFRESH_TOKEN=old\nB=2\n')
+            m.write_env_value("GMAIL_REFRESH_TOKEN", "new-token", p)
+            self.assertEqual(p.read_text(), 'A=1\n# comment\nGMAIL_CLIENT_ID="x"\nGMAIL_REFRESH_TOKEN=new-token\nB=2\n')
+            m.write_env_value("OTHER", "v", p)
+            self.assertTrue(p.read_text().endswith("OTHER=v\n"))
+            self.assertEqual(oct(p.stat().st_mode)[-3:], "600")                        # secrets file is owner-only
+            self.assertEqual(m.read_env(p)["GMAIL_CLIENT_ID"], "x")

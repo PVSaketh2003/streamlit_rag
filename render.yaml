@@ -43,6 +43,12 @@ services:
         value: pvsaketh1@gmail.com
       - key: EMAIL_HOST_PASSWORD   # Google App Password for EMAIL_HOST_USER
         sync: false
+      - key: GMAIL_CLIENT_ID       # Gmail API over HTTPS (recommended; works on the free plan)
+        sync: false
+      - key: GMAIL_CLIENT_SECRET
+        sync: false
+      - key: GMAIL_REFRESH_TOKEN
+        sync: false
       - key: BREVO_API_KEY         # alternative to SMTP; works on the free plan
         sync: false
       - key: ALLOWED_EMAILS        # optional invite list, comma separated (recommended)
