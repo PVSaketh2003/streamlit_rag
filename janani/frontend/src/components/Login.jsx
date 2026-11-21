@@ -57,11 +57,13 @@ export default function Login({ onDone }) {
   const [code, setCode] = useState(Array(LEN).fill(''))
   const [shake, setShake] = useState(0)
   const [now, setNow] = useState(Date.now())
+  const [mail, setMail] = useState(null)             // server's email setup, from /api/health/ (never secrets)
   const mounted = useRef(true)
 
   // set true on every mount: React StrictMode (dev) mounts, unmounts and re-mounts, and the flag must survive that
   useEffect(() => { mounted.current = true; return () => { mounted.current = false } }, [])
   useEffect(() => { const t = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(t) }, [])
+  useEffect(() => { api.get('/health/').then((d) => setMail(d.email || null)).catch(() => {}) }, [])
 
   const strength = passwordStrength(password)
   const resendIn = ch ? Math.max(0, Math.ceil((ch.resendAt - now) / 1000)) : 0
@@ -139,6 +141,9 @@ export default function Login({ onDone }) {
               </label>
               {isNew && <div className="meter" aria-hidden><i style={{ width: `${(strength / 4) * 100}%` }} className={`s${strength}`} /></div>}
               <p className="login-hint">New here? Pick a password (8+ characters) and we’ll create your account after you confirm the code.</p>
+              {mail && mail.configured === false && (
+                <p className="login-warn" role="status">Email sign-in isn’t set up on this server yet, so codes can’t be sent. The owner needs to finish the email setup (see the README).</p>
+              )}
               {error && <p className="login-err" role="alert">{error}</p>}
               <button className="btn primary wide big" disabled={busy}>
                 {busy ? <Loader2 size={17} className="spin" /> : <ArrowRight size={17} />}{busy ? 'Sending code…' : 'Continue'}
