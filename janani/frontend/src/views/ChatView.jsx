@@ -4,6 +4,7 @@ import { ArrowDown, ArrowUp, Eraser, Square, Video } from 'lucide-react'
 import { useApp } from '../store'
 import AddVideo, { LanguageBridge, langOptions } from '../components/AddVideo'
 import Pipeline from '../components/Pipeline'
+import Mascot from '../components/Mascot'
 import { Avatar, MessageView } from '../components/Message'
 import { Chip, Select } from '../components/ui'
 import { displayName, QRY_STAGES, splitReasoning } from '../format'
@@ -52,7 +53,19 @@ function Hero({ name, tapes = true, compact = false }) {
       <motion.span className="pill" initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }}><b />{name ? `Hi ${name}` : 'Hello'} · ask in any language, answer in the one you choose</motion.span>
       <h1><Letters text="Talk to any" /> <span className="rot"><AnimatePresence mode="wait"><motion.em key={i} initial={{ y: 30, opacity: 0 }} animate={{ y: 0, opacity: 1 }} exit={{ y: -30, opacity: 0 }} transition={{ duration: .45 }}>{WORDS[i]}</motion.em></AnimatePresence></span></h1>
       <motion.p initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: .7 }}>Paste a YouTube link. The video and the answer can be in different languages.</motion.p>
+      <div className="hero-mascot"><Say words={TICKER} /><Mascot size={136} /></div>
       {tapes && <Tapes words={TICKER} />}
+    </div>
+  )
+}
+
+/** Speech bubble that greets in a new language every few seconds. */
+function Say({ words }) {
+  const [k, setK] = useState(0)
+  useEffect(() => { const t = setInterval(() => setK((x) => (x + 1) % words.length), 2600); return () => clearInterval(t) }, [words.length])
+  return (
+    <div className="say" aria-hidden="true">
+      <AnimatePresence mode="wait"><motion.span key={k} initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }} transition={{ duration: .22 }}>{words[k]}!</motion.span></AnimatePresence>
     </div>
   )
 }
@@ -91,7 +104,7 @@ function LiveAnswer() {
   const el = ((Date.now() - live.t0) / 1000).toFixed(1)
   return (
     <div className="msg ai live">
-      <Avatar />
+      <Mascot size={46} mood="think" className="m-avatar" />
       <div className="ai-body">
         <Pipeline stages={QRY_STAGES} state={live.stages} compact />
         {!answer && <div className="think"><i /><i /><i /><span>{live.status} · {el}s</span></div>}

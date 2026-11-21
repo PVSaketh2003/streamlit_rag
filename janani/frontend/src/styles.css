@@ -786,3 +786,37 @@ body { background-color: var(--bg); background-image: radial-gradient(rgba(20,18
   background: var(--p-pink); border: 3px solid var(--ink); transform: rotate(-3deg) translate(-8px, 10px); }
 .login-card::after { content: ''; position: absolute; z-index: -1; inset: 0; border-radius: 30px; background: #fff; border: 3px solid var(--ink); box-shadow: var(--hard-l); transform: none; }
 .login-page .stk.s5 { display: none; }
+
+/* ======================================================================
+   v11: Janani the mascot
+   ====================================================================== */
+.mascot { display: block; overflow: visible; cursor: pointer; animation: bob 3.6s ease-in-out infinite; user-select: none; -webkit-tap-highlight-color: transparent; }
+.mascot .m-body { transform-box: fill-box; transform-origin: 50% 100%; }
+@keyframes bob { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-9px); } }
+.mascot .m-eyes { transform-box: fill-box; transform-origin: center; animation: blink 5.5s infinite; }
+@keyframes blink { 0%, 93%, 100% { transform: scaleY(1); } 95.5% { transform: scaleY(.08); } }
+.mascot .m-pupils { transition: transform .12s ease-out; }
+.mascot .m-tip { animation: tip 1.8s ease-in-out infinite; transform-box: fill-box; transform-origin: center; } @keyframes tip { 50% { transform: scale(1.25); } }
+.mascot .m-arm { transform-box: fill-box; transform-origin: 50% 90%; }
+.mascot.m-happy .m-arm.r, .mascot.hop .m-arm.r { animation: wave .5s ease-in-out infinite alternate; } .mascot.m-happy .m-arm.l { animation: wave .5s .1s ease-in-out infinite alternate-reverse; }
+@keyframes wave { from { transform: rotate(-18deg); } to { transform: rotate(22deg); } }
+.mascot.hop { animation: hop .65s cubic-bezier(.3,.9,.4,1) 2; } @keyframes hop { 0%, 100% { transform: translateY(0) scale(1, 1); } 35% { transform: translateY(-34px) scale(.96, 1.06); } 70% { transform: translateY(0) scale(1.08, .92); } }
+.mascot.m-think .m-dots circle { animation: thinkdot 1.2s ease-in-out infinite; } .mascot.m-think .m-dots circle:nth-child(2) { animation-delay: .2s; } .mascot.m-think .m-dots circle:nth-child(3) { animation-delay: .4s; }
+@keyframes thinkdot { 0%, 100% { opacity: .25; } 50% { opacity: 1; } }
+.mascot.m-think .m-o { animation: owobble 1.1s ease-in-out infinite; transform-box: fill-box; transform-origin: center; } @keyframes owobble { 50% { transform: scale(1.3, .8); } }
+.mascot.m-listen .m-body { animation: groove .7s ease-in-out infinite alternate; } @keyframes groove { from { transform: rotate(-3deg); } to { transform: rotate(3deg); } }
+
+/* chat welcome: mascot + greeting bubble beside the headline */
+.hero { position: relative; }
+.hero-mascot { position: absolute; right: -190px; top: -2px; display: grid; justify-items: center; gap: 6px; z-index: 2; }
+.say { position: relative; padding: 7px 16px; min-width: 96px; text-align: center; border-radius: 18px; background: #fff; border: 2.5px solid var(--ink); box-shadow: var(--hard-s); font: 400 21px/1.2 var(--serif); font-style: italic; color: var(--ink); }
+.say::after { content: ''; position: absolute; left: 50%; bottom: -9px; width: 14px; height: 14px; margin-left: -7px; background: #fff; border-right: 2.5px solid var(--ink); border-bottom: 2.5px solid var(--ink); transform: rotate(45deg); }
+@media (max-width: 1240px) { .hero-mascot { display: none; } }
+
+/* sign-in: peeks out from behind the demo window */
+.demo-mascot { position: absolute; right: 18px; bottom: -96px; z-index: 3; }
+@media (max-height: 760px) { .demo-mascot { width: 88px; bottom: -78px; } }
+
+/* thinking avatar in the live answer, listening buddy while indexing */
+.m-avatar { flex: none; margin-top: -4px; animation-duration: 2.4s; }
+.listen .mascot { margin-bottom: -4px; }

@@ -5,6 +5,7 @@ import { api } from '../api'
 import { displayName, fmtClock, isEmail, maskEmail, passwordStrength } from '../format'
 import { Brand } from './TopBar'
 import Stickers from './Stickers'
+import Mascot from './Mascot'
 
 const LEN = 6
 const DEAD = ['challenge_invalid', 'code_expired', 'too_many_attempts']
@@ -53,6 +54,7 @@ function LiveDemo() {
   const shownA = phase === 'a' ? words.slice(0, n) : phase === 'done' ? words : []
   return (
     <div className="demo" aria-hidden="true">
+      <Mascot size={108} className="demo-mascot" />
       <div className="demo-bar">
         <i /><i /><i />
         <span>Janani · Backpropagation, intuitively</span>
