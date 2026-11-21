@@ -2,7 +2,7 @@ import { useEffect } from 'react'
 
 const SPOT = '.panel, .sug, .tile, .addvideo, .chunk, .how, .src, .bridge, .preview, .composer, .demo, .login-card, .proofs li, .ai-body, .empty-live, .steps3 li'
 const TILT = '.sug, .src'
-const MAGNET = '.btn.primary, .send, .dock button, .login-card .btn, .proofs li'
+const MAGNET = '.btn.primary, .send, .dock button, .proofs li'
 
 /** Pointer effects via event delegation: card spotlight, 3D tilt, magnetic buttons, cursor halo. */
 export function useFx() {
