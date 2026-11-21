@@ -780,3 +780,9 @@ body { background-color: var(--bg); background-image: radial-gradient(rgba(20,18
 .tile:nth-child(6n+1) { background: var(--p-lilac); } .tile:nth-child(6n+2) { background: var(--p-mint); } .tile:nth-child(6n+3) { background: var(--p-butter); }
 .tile:nth-child(6n+4) { background: var(--p-peach); } .tile:nth-child(6n+5) { background: var(--p-sky); } .tile:nth-child(6n+6) { background: var(--p-pink); }
 .tile-l, .tile small { color: var(--ink); opacity: .75; }
+/* sign-in card: pink paper tilted BEHIND a white face (::before below ::after) */
+.login-card { background: transparent; border: 0; box-shadow: none; }
+.login-card::before { display: block; content: ''; position: absolute; z-index: -2; inset: 0; border-radius: 30px; padding: 0; opacity: 1; animation: none; -webkit-mask: none; mask: none;
+  background: var(--p-pink); border: 3px solid var(--ink); transform: rotate(-3deg) translate(-8px, 10px); }
+.login-card::after { content: ''; position: absolute; z-index: -1; inset: 0; border-radius: 30px; background: #fff; border: 3px solid var(--ink); box-shadow: var(--hard-l); transform: none; }
+.login-page .stk.s5 { display: none; }
